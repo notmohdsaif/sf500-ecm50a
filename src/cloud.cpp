@@ -61,10 +61,12 @@ void registerDevice()
   http.setTimeout(15000);
 
   int code = http.GET();
+  Serial.println("[REG] HTTP code: " + String(code));
 
   if (code == 200)
   {
     String response = http.getString();
+    Serial.println("[REG] Response: " + response.substring(0, 80));
 
     if (response == "[]" || response.length() < 5)
     {
@@ -128,7 +130,7 @@ void uploadSensorConfig()
   {
     String key = "sensor" + String(idx++);
     JsonObject s = sensorObj.createNestedObject(key);
-    s["ID"]     = String(EC_SENSOR_ID);
+    s["ID"]     = String(ecSensorId);
     s["type"]   = "EC";
     s["status"] = "online";
   }
@@ -174,8 +176,8 @@ void uploadSensorReadings()
   if (ecSensorFound)
   {
     char ecId[8], wtId[8];
-    sprintf(ecId, "ec_%02d", EC_SENSOR_ID);
-    sprintf(wtId, "wt_%02d", EC_SENSOR_ID);
+    sprintf(ecId, "ec_%02d", ecSensorId);
+    sprintf(wtId, "wt_%02d", ecSensorId);
 
     JsonObject ec = arr.createNestedObject();
     ec["device"]    = deviceName;
@@ -251,7 +253,7 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time";
 
   if (!http.begin(secureClient, url))
     return;
@@ -280,6 +282,7 @@ void fetchDeviceConfig()
     {
       autoDosing = newVal;
       autoDosingStartTime = autoDosing ? millis() : 0;
+      autoState = AUTO_IDLE; // state machine resets on any toggle
       Serial.println(autoDosing ? "\n[CONFIG] Auto-Dosing ON" : "\n[CONFIG] Auto-Dosing OFF");
       changed = true;
     }
@@ -306,10 +309,21 @@ void fetchDeviceConfig()
 
       ecReadingCount = 0;
       ecReadingIndex = 0;
-      lastDosingTime = 0;
+      autoState = AUTO_IDLE; // reset state machine when target changes
 
       Serial.println("\n[CONFIG] EC Target: " + String(ecTarget, 2) +
                      " (dose below " + String(ecMinusHys, 2) + ")");
+      changed = true;
+    }
+  }
+
+  if (!dev["dosing_time"].isNull())
+  {
+    unsigned int newVal = dev["dosing_time"].as<unsigned int>();
+    if (newVal > 0 && newVal != dosingTime)
+    {
+      dosingTime = newVal;
+      Serial.println("[CONFIG] Dosing Time: " + String(dosingTime) + "s");
       changed = true;
     }
   }
@@ -392,4 +406,35 @@ void fetchSchedules()
                   schedules[i].minute,
                   schedules[i].duration);
   }
+}
+
+// =====================================================
+// DEVICE ACTIVITY LOGGING
+// Fire-and-forget POST to activity_log table.
+// =====================================================
+
+void logDeviceActivity(const char *category, const char *action)
+{
+  if (!isRegistered || deviceName.isEmpty()) return;
+
+  HTTPClient http;
+  String url = String(SUPABASE_URL) + "/rest/v1/activity_log";
+  if (!http.begin(secureClient, url)) return;
+
+  StaticJsonDocument<256> doc;
+  doc["device"]   = deviceName;
+  doc["category"] = category;
+  doc["action"]   = action;
+  doc["source"]   = "device";
+
+  String payload;
+  serializeJson(doc, payload);
+
+  http.addHeader("Content-Type",  "application/json");
+  http.addHeader("apikey",        SUPABASE_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+  http.addHeader("Prefer",        "return=minimal");
+  http.setTimeout(10000);
+  http.POST(payload);
+  http.end();
 }

@@ -5,6 +5,7 @@
 
 #include "sensors.h"
 #include "relay.h"    // writeRelay() used in checkAutoDosing
+#include "cloud.h"    // logDeviceActivity()
 
 // =====================================================
 // SENSOR INITIALISATION
@@ -14,12 +15,26 @@ void initSensors()
 {
   Serial.println("\n--- Initializing Sensors ---");
 
-  // EC Sensor (Fixed Modbus ID 3)
-  modbus.begin(EC_SENSOR_ID, Serial1);
-  ecSensorFound = true;
-  Serial.println("EC Sensor: ID " + String(EC_SENSOR_ID) + " (fixed)");
+  // Scan for EC Sensor (IDs 3–5)
+  ecSensorFound = false;
+  for (uint8_t id = EC_SCAN_START; id <= EC_SCAN_END; id++)
+  {
+    modbus.begin(id, Serial1);
+    delay(50);
 
-  // Scan for Water Level Sensor (IDs 10-19)
+    if (modbus.readHoldingRegisters(0, 4) == modbus.ku8MBSuccess)
+    {
+      ecSensorId    = id;
+      ecSensorFound = true;
+      Serial.println("EC Sensor: ID " + String(id));
+      break;
+    }
+    delay(30);
+  }
+  if (!ecSensorFound)
+    Serial.println("EC Sensor: not found (scanned IDs " + String(EC_SCAN_START) + "–" + String(EC_SCAN_END) + ")");
+
+  // Scan for Water Level Sensor (IDs 13–15)
   wlSensorFound = false;
   for (uint8_t id = WL_SCAN_START; id <= WL_SCAN_END; id++)
   {
@@ -31,7 +46,7 @@ void initSensors()
       uint16_t raw = modbus.getResponseBuffer(0);
       if (raw < 10000)
       {
-        wlSensorId   = id;
+        wlSensorId    = id;
         wlSensorFound = true;
         Serial.println("Water Level: ID " + String(id));
         break;
@@ -39,9 +54,17 @@ void initSensors()
     }
     delay(30);
   }
+  if (!wlSensorFound)
+    Serial.println("Water Level: not found (scanned IDs " + String(WL_SCAN_START) + "–" + String(WL_SCAN_END) + ")");
 
   int found = (int)ecSensorFound + (int)wlSensorFound;
   Serial.println("Found: " + String(found) + "/2 sensors\n");
+
+  String msg = "Sensor init: ";
+  if (ecSensorFound) msg += "EC(ID=" + String(ecSensorId) + ") ";
+  if (wlSensorFound) msg += "WL(ID=" + String(wlSensorId) + ")";
+  if (!ecSensorFound && !wlSensorFound) msg += "none found";
+  logDeviceActivity("system", msg.c_str());
 }
 
 // =====================================================
@@ -55,7 +78,7 @@ void readSensors()
   // --- EC Sensor ---
   if (ecSensorFound)
   {
-    modbus.begin(EC_SENSOR_ID, Serial1);
+    modbus.begin(ecSensorId, Serial1);
     delay(10);
 
     if (modbus.readHoldingRegisters(0, 4) == modbus.ku8MBSuccess)
@@ -67,8 +90,6 @@ void readSensors()
       uint32_t ecRaw = ((uint32_t)r0 << 16) | r1;
       sensors.ec   = ecRaw / 100000.0f;
       sensors.temp = r2 / 10.0f;
-
-      updateECAverage(sensors.ec);
       success = true;
     }
     delay(50);
@@ -91,40 +112,88 @@ void readSensors()
   if (success)
     sensors.hasData = true;
 
-  // --- Publish via MQTT ---
-  if (success && mqttClient.connected())
+  // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
+  if (mqttClient.connected())
   {
-    StaticJsonDocument<128> doc;
-    if (ecSensorFound)
-    {
-      doc["ec"]   = sensors.ec;
-      doc["temp"] = sensors.temp;
-    }
-    if (wlSensorFound)
-      doc["wl"] = sensors.wl;
+    StaticJsonDocument<512> doc;
 
-    char buf[128];
+    if (success)
+    {
+      if (ecSensorFound)
+      {
+        doc["ec"]   = sensors.ec;
+        doc["temp"] = sensors.temp;
+      }
+      if (wlSensorFound)
+        doc["wl"] = sensors.wl;
+    }
+
+    // Include auto-dosing state when active or in alarm
+    if (autoDosing || autoState == AUTO_ALARM)
+    {
+      const char* stateNames[] = {
+        "idle","startup_wait","sampling","pre_mix",
+        "dosing","post_mix","cooldown","stabilising","alarm"
+      };
+      JsonObject autoObj = doc.createNestedObject("auto");
+      autoObj["state"]       = stateNames[autoState];
+      autoObj["samples"]     = ecReadingCount;
+      autoObj["avg"]         = serialized(String(ecAverage, 3));
+      autoObj["doses_today"] = dosesToday;
+
+      if (lastDoseTimestamp > 0)
+      {
+        struct tm ti;
+        localtime_r(&lastDoseTimestamp, &ti);
+        char ts[30];
+        sprintf(ts, "%04d-%02d-%02dT%02d:%02d:%02d+08:00",
+                ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+                ti.tm_hour, ti.tm_min, ti.tm_sec);
+        autoObj["last_dose"] = ts;
+      }
+    }
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      JsonObject wifiObj = doc.createNestedObject("wifi");
+      wifiObj["ssid"] = WiFi.SSID();
+      wifiObj["rssi"] = WiFi.RSSI();
+      wifiObj["ip"]   = WiFi.localIP().toString();
+    }
+
+    JsonObject sensorsObj = doc.createNestedObject("sensors");
+    sensorsObj["ec"] = ecSensorFound;
+    sensorsObj["wl"] = wlSensorFound;
+
+    char buf[512];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }
 
-  // --- Debug output when auto-dosing is active ---
+  // Only add to rolling average when R1 is NOT dosing and not in stabilising skip window
+  if (success && ecSensorFound && !relayStates[0])
+  {
+    if (autoState == AUTO_STABILISING)
+      tickStabiliseSkip(); // count skipped readings, don't add to average
+    else
+      updateECAverage(sensors.ec);
+  }
+
+  // Debug output when auto-dosing is active
   if (autoDosing && ecSensorFound)
   {
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug >= 10000)
     {
-      Serial.print("[Auto] EC:" + String(sensors.ec, 2));
-      if (ecReadingCount >= EC_SAMPLES)
-      {
+      const char* stateNames[] = {
+        "idle","startup_wait","sampling","pre_mix",
+        "dosing","post_mix","cooldown","stabilising","alarm"
+      };
+      Serial.print("[Auto] state:" + String(stateNames[autoState]));
+      Serial.print(" EC:" + String(sensors.ec, 2));
+      if (ecReadingCount > 0)
         Serial.print(" Avg:" + String(ecAverage, 2));
-        Serial.print(" Trig:<" + String(ecMinusHys, 2));
-        Serial.println(ecAverage < ecMinusHys ? " DOSING!" : " OK");
-      }
-      else
-      {
-        Serial.println(" Samples:" + String(ecReadingCount) + "/" + String(EC_SAMPLES));
-      }
+      Serial.println(" samples:" + String(ecReadingCount) + "/" + String(EC_SAMPLES));
       lastDebug = millis();
     }
   }
@@ -149,66 +218,231 @@ void updateECAverage(float reading)
 }
 
 // =====================================================
-// AUTO-DOSING LOGIC
+// AUTO-DOSING STATE MACHINE
 // =====================================================
+
+static void enterState(AutoDosingState next)
+{
+  autoState          = next;
+  autoStateEnteredAt = millis();
+}
+
+static void triggerAlarm(const String& reason)
+{
+  Serial.println("\n[Auto] ALARM: " + reason);
+  autoDosing = false;
+  writeRelay(1, false);
+  writeRelay(2, false);
+  enterState(AUTO_ALARM);
+  String msg = "Auto-dosing alarm: " + reason;
+  logDeviceActivity("alarm", msg.c_str());
+}
 
 void checkAutoDosing()
 {
   unsigned long now = millis();
 
-  // Wait after startup before dosing
-  if (now - autoDosingStartTime < INITIAL_WAIT)
+  // Sync state to IDLE when auto-dosing is disabled
+  if (!autoDosing)
   {
-    static unsigned long lastMsg = 0;
-    if (now - lastMsg >= 30000)
-    {
-      unsigned long rem = (INITIAL_WAIT - (now - autoDosingStartTime)) / 1000;
-      Serial.println("[Auto] Startup wait: " + String(rem) + "s remaining");
-      lastMsg = now;
-    }
+    if (autoState != AUTO_IDLE && autoState != AUTO_ALARM)
+      enterState(AUTO_IDLE);
     return;
   }
 
-  // Need a full window of samples before deciding
-  if (ecReadingCount < EC_SAMPLES)
+  if (!ecSensorFound)
     return;
 
-  // Wait after last dose before dosing again
-  if (lastDosingTime > 0 && (now - lastDosingTime < POST_DOSE_DELAY))
+  switch (autoState)
   {
-    static unsigned long lastMsg = 0;
-    if (now - lastMsg >= 10000)
+    // -------------------------------------------------
+    case AUTO_IDLE:
+      ecReadingCount = 0;
+      ecReadingIndex = 0;
+      consecutiveIneffectiveDoses = 0;
+      stabiliseSkipCount = 0;
+      enterState(AUTO_STARTUP_WAIT);
+      Serial.println("[Auto] Starting — waiting " + String(INITIAL_WAIT / 1000) + "s");
+      break;
+
+    // -------------------------------------------------
+    case AUTO_STARTUP_WAIT:
+      if (now - autoStateEnteredAt >= INITIAL_WAIT)
+      {
+        ecReadingCount = 0;
+        ecReadingIndex = 0;
+        enterState(AUTO_SAMPLING);
+        Serial.println("[Auto] Startup wait done — sampling");
+      }
+      break;
+
+    // -------------------------------------------------
+    case AUTO_SAMPLING:
+      // EC ceiling check
+      if (ecReadingCount >= EC_SAMPLES && ecAverage > ecTarget + EC_CEILING_MARGIN)
+      {
+        triggerAlarm("EC above ceiling (" + String(ecAverage, 2) +
+                     " > " + String(ecTarget + EC_CEILING_MARGIN, 2) + ")");
+        return;
+      }
+
+      // Wait for full sample window
+      if (ecReadingCount < EC_SAMPLES)
+        return;
+
+      // EC is acceptable — keep monitoring
+      if (ecAverage >= ecMinusHys)
+        return;
+
+      // Don't interrupt a manually-running relay timer
+      if (relayDurations[0] > 0 || relayTimers[0] > 0)
+      {
+        Serial.println("[Auto] Skipping — R1 timer already active");
+        return;
+      }
+
+      // EC below threshold — prepare to dose
+      preDoseEC = ecAverage;
+      Serial.println("\n[Auto] EC low: avg=" + String(ecAverage, 3) +
+                     " < " + String(ecMinusHys, 2) +
+                     " | Path " + String(autoMixing ? "B (mix)" : "A (no mix)"));
+
+      ecReadingCount = 0;
+      ecReadingIndex = 0;
+
+      if (autoMixing)
+      {
+        writeRelay(2, true);
+        enterState(AUTO_PRE_MIX);
+        Serial.println("[Auto] PRE_MIX: R2 ON for " + String(PRE_MIX_DURATION / 1000) + "s");
+      }
+      else
+      {
+        relayDurations[0] = dosingTime;
+        relayTimers[0]    = now;
+        writeRelay(1, true);
+        enterState(AUTO_DOSING);
+        Serial.println("[Auto] DOSING: R1 ON for " + String(dosingTime) + "s");
+      }
+      break;
+
+    // -------------------------------------------------
+    case AUTO_PRE_MIX:  // Path B only
+      if (now - autoStateEnteredAt >= PRE_MIX_DURATION)
+      {
+        relayDurations[0] = dosingTime;
+        relayTimers[0]    = now;
+        relayDurations[1] = dosingTime + POST_MIX_DURATION / 1000;
+        relayTimers[1]    = now;
+        writeRelay(1, true);
+        enterState(AUTO_DOSING);
+        Serial.println("[Auto] DOSING: R1+R2 ON for " + String(dosingTime) + "s");
+      }
+      break;
+
+    // -------------------------------------------------
+    case AUTO_DOSING:
+      if (now - autoStateEnteredAt >= (unsigned long)dosingTime * 1000UL)
+      {
+        writeRelay(1, false);
+        relayDurations[0] = 0;
+        relayTimers[0]    = 0;
+        doseEndTime       = now;
+        lastDoseTimestamp = time(nullptr);
+        dosesToday++;
+
+        Serial.println("[Auto] Dose complete. doses_today=" + String(dosesToday));
+        {
+          String doseMsg = "Auto-dose executed: " + String(dosingTime) + "s (dose #" + String(dosesToday) + " today)";
+          logDeviceActivity("dosing", doseMsg.c_str());
+        }
+
+        if (autoMixing)
+        {
+          enterState(AUTO_POST_MIX);
+          Serial.println("[Auto] POST_MIX: R2 ON for " + String(POST_MIX_DURATION / 1000) + "s");
+        }
+        else
+        {
+          stabiliseSkipCount = 0;
+          enterState(AUTO_COOLDOWN);
+          Serial.println("[Auto] COOLDOWN (no mix): " + String(POST_DOSE_DELAY_NO_MIX / 1000) + "s");
+        }
+      }
+      break;
+
+    // -------------------------------------------------
+    case AUTO_POST_MIX:  // Path B only
+      if (now - autoStateEnteredAt >= POST_MIX_DURATION)
+      {
+        writeRelay(2, false);
+        relayDurations[1] = 0;
+        relayTimers[1]    = 0;
+        stabiliseSkipCount = 0;
+        enterState(AUTO_COOLDOWN);
+        Serial.println("[Auto] COOLDOWN (mix): " + String(POST_DOSE_DELAY_MIX / 1000) + "s");
+      }
+      break;
+
+    // -------------------------------------------------
+    case AUTO_COOLDOWN:
     {
-      unsigned long rem = (POST_DOSE_DELAY - (now - lastDosingTime)) / 1000;
-      Serial.println("[Auto] Post-dose wait: " + String(rem) + "s remaining");
-      lastMsg = now;
+      unsigned long delay = autoMixing ? POST_DOSE_DELAY_MIX : POST_DOSE_DELAY_NO_MIX;
+      if (now - doseEndTime >= delay)
+      {
+        enterState(AUTO_STABILISING);
+        Serial.println("[Auto] STABILISING: skipping " +
+                       String(autoMixing ? STABILISE_SKIP_MIX : STABILISE_SKIP_NO_MIX) + " readings");
+      }
+      break;
     }
-    return;
-  }
 
-  // Trigger dosing if EC average is below threshold
-  if (ecAverage < ecMinusHys)
-  {
-    Serial.println("\n--- AUTO-DOSING ---");
-    Serial.println("EC Avg: " + String(ecAverage, 3) + " < " + String(ecMinusHys, 2));
-    Serial.println("Dosing for " + String(dosingTime) + "s");
-    Serial.println("Mixing Pump: " + String(autoMixing ? "ON" : "OFF") + "\n");
-
-    // Activate dosing pump (R1)
-    relayDurations[0] = dosingTime;
-    relayTimers[0]    = now;
-    writeRelay(1, true);
-
-    // Activate mixing pump (R2) only if enabled
-    if (autoMixing)
+    // -------------------------------------------------
+    case AUTO_STABILISING:
     {
-      relayDurations[1] = dosingTime;
-      relayTimers[1]    = now;
-      writeRelay(2, true);
+      int skipTarget = autoMixing ? STABILISE_SKIP_MIX : STABILISE_SKIP_NO_MIX;
+      if (stabiliseSkipCount < skipTarget)
+        return; // readings are being skipped in readSensors via the guard
+
+      // Check dose response
+      if (ecReadingCount >= EC_SAMPLES)
+      {
+        float ecRise = ecAverage - preDoseEC;
+        Serial.println("[Auto] Response check: pre=" + String(preDoseEC, 3) +
+                       " now=" + String(ecAverage, 3) +
+                       " rise=" + String(ecRise, 3));
+
+        if (ecRise < DOSE_RESPONSE_THRESHOLD)
+        {
+          consecutiveIneffectiveDoses++;
+          Serial.println("[Auto] Ineffective dose #" + String(consecutiveIneffectiveDoses));
+          if (consecutiveIneffectiveDoses >= MAX_INEFFECTIVE_DOSES)
+          {
+            triggerAlarm("No EC response after " + String(MAX_INEFFECTIVE_DOSES) + " doses");
+            return;
+          }
+        }
+        else
+        {
+          consecutiveIneffectiveDoses = 0;
+        }
+
+        enterState(AUTO_SAMPLING);
+        Serial.println("[Auto] Back to SAMPLING");
+      }
+      break;
     }
 
-    lastDosingTime = now;
-    ecReadingCount = 0;
-    ecReadingIndex = 0;
+    // -------------------------------------------------
+    case AUTO_ALARM:
+      // Stays in ALARM until autoDosing is re-enabled from dashboard
+      break;
   }
+}
+
+// Called from readSensors() to advance stabilise skip counter
+void tickStabiliseSkip()
+{
+  if (autoState == AUTO_STABILISING)
+    stabiliseSkipCount++;
 }

@@ -9,6 +9,7 @@
 #include "mqtt_handler.h"
 #include "sensors.h"
 #include "relay.h"
+#include "ota.h"
 
 // =====================================================
 // GLOBAL VARIABLE DEFINITIONS
@@ -36,7 +37,11 @@ bool isRegistered = false;
 String mqttTopicData;
 String topicRelayUpdate;
 String topicRelayStatus;
+String topicWifiCmd;
+bool pendingWifiForget = false;
+bool pendingWifiPortal = false;
 
+uint8_t ecSensorId = 0;
 uint8_t wlSensorId = 0;
 bool ecSensorFound = false;
 bool wlSensorFound = false;
@@ -55,8 +60,16 @@ float ecReadings[EC_SAMPLES];
 int ecReadingIndex = 0;
 int ecReadingCount = 0;
 float ecAverage = 0.0f;
-unsigned long autoDosingStartTime = 0;
-unsigned long lastDosingTime = 0;
+
+AutoDosingState autoState                = AUTO_IDLE;
+unsigned long   autoStateEnteredAt       = 0;
+float           preDoseEC                = 0.0f;
+int             consecutiveIneffectiveDoses = 0;
+int             dosesToday               = 0;
+time_t          lastDoseTimestamp        = 0;
+unsigned long   doseEndTime              = 0;
+int             stabiliseSkipCount       = 0;
+unsigned long   autoDosingStartTime      = 0;
 
 unsigned long lastSensorRead = 0;
 unsigned long lastSensorUpload = 0;
@@ -64,6 +77,7 @@ unsigned long lastStatusUpdate = 0;
 unsigned long lastConfigCheck = 0;
 unsigned long lastScheduleCheck = 0;
 unsigned long lastScheduleFetch = 0;
+unsigned long lastOTACheck = 0;
 
 Schedule schedules[MAX_SCHEDULES];
 int scheduleCount = 0;
@@ -114,9 +128,10 @@ void setup()
   deviceName = "sf500_" + lastSix;
 
   // --- MQTT topics ---
-  mqttTopicData = "sf500/" + lastSix + "/data";
+  mqttTopicData    = "sf500/" + lastSix + "/data";
   topicRelayUpdate = "sf500/" + lastSix + "/relay_update";
   topicRelayStatus = "sf500/" + lastSix + "/relay_status";
+  topicWifiCmd     = "sf500/" + lastSix + "/wifi_cmd";
 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
@@ -178,6 +193,9 @@ void setup()
 
     if (isRegistered)
     {
+      markAppValid();
+      logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
+      checkForOTAUpdate();
       initSensors();
       uploadSensorConfig();
       fetchDeviceConfig();
@@ -219,6 +237,9 @@ void loop()
 
     if (isRegistered)
     {
+      markAppValid();
+      logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
+      checkForOTAUpdate();
       initSensors();
       uploadSensorConfig();
       fetchDeviceConfig();
@@ -264,6 +285,24 @@ void loop()
     return;
   }
 
+  // --- Pending WiFi commands (deferred from MQTT callback to avoid re-entrancy) ---
+  if (pendingWifiForget)
+  {
+    pendingWifiForget = false;
+    wifiPrefs.begin("wifi", false);
+    wifiPrefs.clear();
+    wifiPrefs.end();
+    Serial.println("[WiFi] Credentials forgotten, restarting...");
+    delay(500);
+    ESP.restart();
+  }
+  if (pendingWifiPortal)
+  {
+    pendingWifiPortal = false;
+    Serial.println("[WiFi] Starting portal on remote command...");
+    startWiFiPortal();
+  }
+
   // --- MQTT keepalive ---
   if (!mqttClient.connected())
     reconnectMQTT();
@@ -307,6 +346,12 @@ void loop()
   {
     checkSchedules();
     lastScheduleCheck = now;
+  }
+
+  if (now - lastOTACheck >= OTA_CHECK_INTERVAL)
+  {
+    checkForOTAUpdate();
+    lastOTACheck = now;
   }
 
   delay(10);
