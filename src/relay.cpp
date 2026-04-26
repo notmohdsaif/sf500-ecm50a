@@ -36,7 +36,7 @@ void writeRelay(uint8_t num, bool state)
       sprintf(relayId, "relay_%02d", num);
       doc["device"]   = deviceName;
       doc["relay_id"] = relayId;
-      doc["status"]   = state ? "ON" : "OFF";
+      doc["status"]   = state ? 1 : 0;
 
       String payload;
       serializeJson(doc, payload);

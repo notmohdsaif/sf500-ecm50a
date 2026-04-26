@@ -13,3 +13,4 @@ void uploadSensorReadings();
 void updateDeviceStatus(const char *status);
 void fetchDeviceConfig();
 void fetchSchedules();
+void logDeviceActivity(const char *category, const char *action);
