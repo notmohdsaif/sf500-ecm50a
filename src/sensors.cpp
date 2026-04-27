@@ -15,24 +15,44 @@ void initSensors()
 {
   Serial.println("\n--- Initializing Sensors ---");
 
-  // Scan for EC Sensor (IDs 3–5)
+  // EC Sensor detection: try default ID first, then fall back to range scan
+  // Register address 0 attempted first; address 1 used as fallback (varies by sensor model)
   ecSensorFound = false;
-  for (uint8_t id = EC_SCAN_START; id <= EC_SCAN_END; id++)
-  {
+
+  auto tryECId = [&](uint8_t id) -> bool {
     modbus.begin(id, Serial1);
     delay(50);
+    bool ok = (modbus.readHoldingRegisters(0, 4) == modbus.ku8MBSuccess);
+    if (!ok) { delay(30); ok = (modbus.readHoldingRegisters(1, 4) == modbus.ku8MBSuccess); }
+    return ok;
+  };
 
-    if (modbus.readHoldingRegisters(0, 4) == modbus.ku8MBSuccess)
+  if (tryECId(EC_SENSOR_DEFAULT))
+  {
+    ecSensorId    = EC_SENSOR_DEFAULT;
+    ecSensorFound = true;
+    Serial.println("EC Sensor: ID " + String(EC_SENSOR_DEFAULT) + " (default)");
+  }
+  else
+  {
+    Serial.println("EC Sensor: ID " + String(EC_SENSOR_DEFAULT) + " not responding — scanning IDs " +
+                   String(EC_SCAN_START) + "–" + String(EC_SCAN_END));
+    for (uint8_t id = EC_SCAN_START; id <= EC_SCAN_END; id++)
     {
-      ecSensorId    = id;
-      ecSensorFound = true;
-      Serial.println("EC Sensor: ID " + String(id));
-      break;
+      if (id == EC_SENSOR_DEFAULT) { delay(30); continue; } // already tried
+      if (tryECId(id))
+      {
+        ecSensorId    = id;
+        ecSensorFound = true;
+        Serial.println("EC Sensor: ID " + String(id) + " (scan)");
+        break;
+      }
+      delay(30);
     }
-    delay(30);
   }
   if (!ecSensorFound)
-    Serial.println("EC Sensor: not found (scanned IDs " + String(EC_SCAN_START) + "–" + String(EC_SCAN_END) + ")");
+    Serial.println("EC Sensor: not found (tried ID " + String(EC_SENSOR_DEFAULT) +
+                   " + scan " + String(EC_SCAN_START) + "–" + String(EC_SCAN_END) + ")");
 
   // Scan for Water Level Sensor (IDs 13–15)
   wlSensorFound = false;
@@ -230,7 +250,8 @@ static void enterState(AutoDosingState next)
 static void triggerAlarm(const String& reason)
 {
   Serial.println("\n[Auto] ALARM: " + reason);
-  autoDosing = false;
+  // Do NOT set autoDosing = false here — the config fetch would re-enable it automatically.
+  // Instead, block all activity via AUTO_ALARM state; user must toggle off→on to reset.
   writeRelay(1, false);
   writeRelay(2, false);
   enterState(AUTO_ALARM);
@@ -242,10 +263,10 @@ void checkAutoDosing()
 {
   unsigned long now = millis();
 
-  // Sync state to IDLE when auto-dosing is disabled
+  // Sync state to IDLE when auto-dosing is disabled (including clearing an active alarm)
   if (!autoDosing)
   {
-    if (autoState != AUTO_IDLE && autoState != AUTO_ALARM)
+    if (autoState != AUTO_IDLE)
       enterState(AUTO_IDLE);
     return;
   }
