@@ -1,0 +1,36 @@
+name: Build and Release Firmware
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run
+        working-directory: .
+
+      - name: Rename binary with version tag
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          cp .pio/build/esp32-s3-devkitm-1/firmware.bin firmware-${VERSION}.bin
+
+      - name: Upload firmware to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: firmware-${{ github.ref_name }}.bin

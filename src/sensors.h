@@ -10,3 +10,4 @@ void initSensors();
 void readSensors();
 void updateECAverage(float reading);
 void checkAutoDosing();
+void tickStabiliseSkip();
