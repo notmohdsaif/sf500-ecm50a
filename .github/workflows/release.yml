@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*.*.*'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,6 +23,14 @@ jobs:
 
       - name: Install PlatformIO
         run: pip install platformio
+
+      - name: Generate config_secrets.h from GitHub Secrets
+        run: |
+          cat > src/config_secrets.h << 'EOF'
+          #pragma once
+          #define AP_PASS "${{ secrets.AP_PASS }}"
+          #define SUPABASE_KEY "${{ secrets.SUPABASE_KEY }}"
+          EOF
 
       - name: Build firmware
         run: pio run
