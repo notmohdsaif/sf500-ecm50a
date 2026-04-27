@@ -18,7 +18,22 @@ void reconnectMQTT()
     if (mqttClient.connect(clientId.c_str()))
     {
       mqttClient.subscribe(topicRelayUpdate.c_str());
+      mqttClient.subscribe(topicWifiCmd.c_str());
       publishRelayStatus();
+
+      // Publish wifi info immediately so dashboard updates without waiting for sensor cycle
+      if (WiFi.status() == WL_CONNECTED)
+      {
+        StaticJsonDocument<128> doc;
+        JsonObject wifiObj = doc.createNestedObject("wifi");
+        wifiObj["ssid"] = WiFi.SSID();
+        wifiObj["rssi"] = WiFi.RSSI();
+        wifiObj["ip"]   = WiFi.localIP().toString();
+        char buf[128];
+        serializeJson(doc, buf);
+        mqttClient.publish(mqttTopicData.c_str(), buf);
+      }
+
       Serial.println("MQTT connected");
       return;
     }
@@ -32,7 +47,34 @@ void reconnectMQTT()
 
 void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
-  if (String(topic) != topicRelayUpdate)
+  String topicStr = String(topic);
+
+  // --- WiFi command handler ---
+  if (topicStr == topicWifiCmd)
+  {
+    String msg;
+    for (unsigned int i = 0; i < length; i++)
+      msg += (char)payload[i];
+
+    StaticJsonDocument<64> doc;
+    if (deserializeJson(doc, msg) == DeserializationError::Ok)
+    {
+      String cmd = doc["cmd"].as<String>();
+      if (cmd == "forget")
+      {
+        Serial.println("[WiFi] Forget command received");
+        pendingWifiForget = true;
+      }
+      else if (cmd == "portal")
+      {
+        Serial.println("[WiFi] Portal command received");
+        pendingWifiPortal = true;
+      }
+    }
+    return;
+  }
+
+  if (topicStr != topicRelayUpdate)
     return;
 
   // Startup protection: ignore commands for first 5 seconds

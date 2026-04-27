@@ -85,8 +85,14 @@ extern bool   isRegistered;
 extern String mqttTopicData;
 extern String topicRelayUpdate;
 extern String topicRelayStatus;
+extern String topicWifiCmd;
+
+// Pending WiFi commands (set in callback, executed in loop to avoid re-entrancy)
+extern bool pendingWifiForget;
+extern bool pendingWifiPortal;
 
 // Sensor state
+extern uint8_t    ecSensorId;
 extern uint8_t    wlSensorId;
 extern bool       ecSensorFound;
 extern bool       wlSensorFound;
@@ -97,18 +103,40 @@ extern bool          relayStates[2];
 extern unsigned long relayTimers[2];
 extern unsigned int  relayDurations[2];
 
-// EC automation state
+// EC automation — config
 extern bool          autoDosing;
 extern bool          autoMixing;
 extern float         ecTarget;
 extern float         ecMinusHys;
 extern unsigned int  dosingTime;
+
+// EC automation — rolling average
 extern float         ecReadings[EC_SAMPLES];
 extern int           ecReadingIndex;
 extern int           ecReadingCount;
 extern float         ecAverage;
-extern unsigned long autoDosingStartTime;
-extern unsigned long lastDosingTime;
+
+// EC automation — state machine
+enum AutoDosingState {
+  AUTO_IDLE,
+  AUTO_STARTUP_WAIT,
+  AUTO_SAMPLING,
+  AUTO_PRE_MIX,
+  AUTO_DOSING,
+  AUTO_POST_MIX,
+  AUTO_COOLDOWN,
+  AUTO_STABILISING,
+  AUTO_ALARM
+};
+extern AutoDosingState autoState;
+extern unsigned long   autoStateEnteredAt;
+extern float           preDoseEC;
+extern int             consecutiveIneffectiveDoses;
+extern int             dosesToday;
+extern time_t          lastDoseTimestamp;
+extern unsigned long   doseEndTime;
+extern int             stabiliseSkipCount;
+extern unsigned long   autoDosingStartTime;
 
 // Timing state
 extern unsigned long lastSensorRead;
@@ -117,6 +145,7 @@ extern unsigned long lastStatusUpdate;
 extern unsigned long lastConfigCheck;
 extern unsigned long lastScheduleCheck;
 extern unsigned long lastScheduleFetch;
+extern unsigned long lastOTACheck;
 
 // Schedule storage
 extern Schedule      schedules[MAX_SCHEDULES];
