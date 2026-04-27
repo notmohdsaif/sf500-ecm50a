@@ -112,6 +112,7 @@ void checkForOTAUpdate()
 
   httpUpdate.setLedPin(-1);
   httpUpdate.rebootOnUpdate(true);
+  httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 
   t_httpUpdate_return result = httpUpdate.update(otaClient, downloadUrl);
 
