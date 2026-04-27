@@ -31,7 +31,8 @@
 #define RELAY2_PIN 16 // DO2 - Mixing Pump
 
 // Sensor Configuration — ID ranges match admin panel SENSOR_TYPES
-#define EC_SCAN_START 3 // EC sensor scan range (IDs 3–5)
+#define EC_SENSOR_DEFAULT 3 // Try this ID first before range scan
+#define EC_SCAN_START 3     // EC sensor scan range fallback
 #define EC_SCAN_END 5
 #define WL_SCAN_START 13 // Water level scan range (IDs 13–15)
 #define WL_SCAN_END 15
@@ -64,7 +65,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.0.1"
+#define FIRMWARE_VERSION "1.0.2"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"
