@@ -56,6 +56,14 @@ bool autoMixing = false;
 float ecTarget = 1.5f;
 float ecMinusHys = 0.0f;
 unsigned int dosingTime = 30;
+
+bool         smartDosing      = false;
+bool         smartCalibrated  = false;
+bool         smartCalPhase    = false;
+float        ecRiseRate       = 0.0f;
+float        wlDropRate       = 0.0f;
+float        wlBeforeCal      = 0.0f;
+unsigned int computedDoseTime = 0;
 float ecReadings[EC_SAMPLES];
 int ecReadingIndex = 0;
 int ecReadingCount = 0;
@@ -197,6 +205,7 @@ void setup()
       logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
       checkForOTAUpdate();
       initSensors();
+      loadSmartCalibration();
       uploadSensorConfig();
       fetchDeviceConfig();
 
@@ -241,6 +250,7 @@ void loop()
       logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
       checkForOTAUpdate();
       initSensors();
+      loadSmartCalibration();
       uploadSensorConfig();
       fetchDeviceConfig();
       startupTime = millis();

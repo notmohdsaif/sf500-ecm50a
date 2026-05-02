@@ -253,7 +253,7 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing";
 
   if (!http.begin(secureClient, url))
     return;
@@ -268,7 +268,7 @@ void fetchDeviceConfig()
   String response = http.getString();
   http.end();
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<320> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
   if (doc.size() == 0) return;
 
@@ -324,6 +324,17 @@ void fetchDeviceConfig()
     {
       dosingTime = newVal;
       Serial.println("[CONFIG] Dosing Time: " + String(dosingTime) + "s");
+      changed = true;
+    }
+  }
+
+  if (!dev["smart_dosing"].isNull())
+  {
+    bool newVal = dev["smart_dosing"];
+    if (newVal != smartDosing)
+    {
+      smartDosing = newVal;
+      Serial.println(smartDosing ? "[CONFIG] Smart Dosing ON" : "[CONFIG] Smart Dosing OFF");
       changed = true;
     }
   }
