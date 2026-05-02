@@ -52,6 +52,12 @@
 #define DOSE_RESPONSE_THRESHOLD 0.02f
 #define MAX_INEFFECTIVE_DOSES 3
 
+// Smart Dosing
+#define SMART_CAL_DURATION 60        // calibration dose length (seconds)
+#define SMART_MIN_DOSE 5             // minimum computed dose (seconds)
+#define SMART_MAX_DOSE 300           // maximum computed dose cap (seconds)
+#define SMART_ERROR_THRESHOLD 0.30f  // re-calibrate if prediction error > 30%
+
 // EC Automation — timing (milliseconds)
 #define INITIAL_WAIT 60000UL
 #define PRE_MIX_DURATION 15000UL
@@ -65,7 +71,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.0.2"
+#define FIRMWARE_VERSION "1.0.3"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

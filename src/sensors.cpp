@@ -88,6 +88,37 @@ void initSensors()
 }
 
 // =====================================================
+// SMART DOSING — NVS persist / restore
+// =====================================================
+
+void loadSmartCalibration()
+{
+  wifiPrefs.begin("smartdose", true);
+  uint8_t cal = wifiPrefs.getUChar("calibrated", 0);
+  if (cal)
+  {
+    ecRiseRate      = wifiPrefs.getFloat("ec_rate", 0.0f);
+    wlDropRate      = wifiPrefs.getFloat("wl_rate", 0.0f);
+    smartCalibrated = (ecRiseRate > 0.0f);
+  }
+  wifiPrefs.end();
+
+  if (smartCalibrated)
+    Serial.println("[Smart] Loaded calibration: ec_rate=" + String(ecRiseRate, 5) + " mS/cm/s");
+  else
+    Serial.println("[Smart] No calibration stored — will calibrate on first smart dose");
+}
+
+void saveSmartCalibration()
+{
+  wifiPrefs.begin("smartdose", false);
+  wifiPrefs.putUChar("calibrated", 1);
+  wifiPrefs.putFloat("ec_rate", ecRiseRate);
+  wifiPrefs.putFloat("wl_rate", wlDropRate);
+  wifiPrefs.end();
+}
+
+// =====================================================
 // SENSOR READ
 // =====================================================
 
@@ -135,7 +166,7 @@ void readSensors()
   // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
   if (mqttClient.connected())
   {
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<768> doc;
 
     if (success)
     {
@@ -171,6 +202,17 @@ void readSensors()
                 ti.tm_hour, ti.tm_min, ti.tm_sec);
         autoObj["last_dose"] = ts;
       }
+
+      if (smartDosing)
+      {
+        JsonObject smartObj       = autoObj.createNestedObject("smart");
+        smartObj["calibrated"]    = smartCalibrated;
+        smartObj["calibrating"]   = smartCalPhase;
+        if (smartCalibrated)
+          smartObj["ec_rate"]     = serialized(String(ecRiseRate, 5));
+        if (computedDoseTime > 0)
+          smartObj["computed"]    = computedDoseTime;
+      }
     }
 
     if (WiFi.status() == WL_CONNECTED)
@@ -181,11 +223,13 @@ void readSensors()
       wifiObj["ip"]   = WiFi.localIP().toString();
     }
 
+    doc["fw"] = FIRMWARE_VERSION;
+
     JsonObject sensorsObj = doc.createNestedObject("sensors");
     sensorsObj["ec"] = ecSensorFound;
     sensorsObj["wl"] = wlSensorFound;
 
-    char buf[512];
+    char buf[768];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }
@@ -299,6 +343,7 @@ void checkAutoDosing()
 
     // -------------------------------------------------
     case AUTO_SAMPLING:
+    {
       // EC ceiling check
       if (ecReadingCount >= EC_SAMPLES && ecAverage > ecTarget + EC_CEILING_MARGIN)
       {
@@ -324,9 +369,31 @@ void checkAutoDosing()
 
       // EC below threshold — prepare to dose
       preDoseEC = ecAverage;
+
+      // Determine dose duration
+      unsigned int thisDoseTime = dosingTime;
+      if (smartDosing && !smartCalibrated)
+      {
+        smartCalPhase = true;
+        wlBeforeCal   = sensors.wl;
+        thisDoseTime  = SMART_CAL_DURATION;
+        Serial.println("[Smart] Calibration dose: " + String(SMART_CAL_DURATION) + "s");
+      }
+      else if (smartDosing && smartCalibrated && ecRiseRate > 0.0f)
+      {
+        float deficit    = ecTarget - ecAverage;
+        float computed   = deficit / ecRiseRate;
+        thisDoseTime     = (unsigned int)constrain((int)roundf(computed), SMART_MIN_DOSE, SMART_MAX_DOSE);
+        computedDoseTime = thisDoseTime;
+        Serial.println("[Smart] Computed dose: " + String(thisDoseTime) + "s"
+                       " (deficit=" + String(deficit, 3) +
+                       " rate=" + String(ecRiseRate, 5) + ")");
+      }
+
       Serial.println("\n[Auto] EC low: avg=" + String(ecAverage, 3) +
                      " < " + String(ecMinusHys, 2) +
-                     " | Path " + String(autoMixing ? "B (mix)" : "A (no mix)"));
+                     " | Path " + String(autoMixing ? "B (mix)" : "A (no mix)") +
+                     " | dose=" + String(thisDoseTime) + "s");
 
       ecReadingCount = 0;
       ecReadingIndex = 0;
@@ -339,25 +406,30 @@ void checkAutoDosing()
       }
       else
       {
-        relayDurations[0] = dosingTime;
+        relayDurations[0] = thisDoseTime;
         relayTimers[0]    = now;
         writeRelay(1, true);
         enterState(AUTO_DOSING);
-        Serial.println("[Auto] DOSING: R1 ON for " + String(dosingTime) + "s");
+        Serial.println("[Auto] DOSING: R1 ON for " + String(thisDoseTime) + "s");
       }
       break;
+    }
 
     // -------------------------------------------------
     case AUTO_PRE_MIX:  // Path B only
       if (now - autoStateEnteredAt >= PRE_MIX_DURATION)
       {
-        relayDurations[0] = dosingTime;
+        // Use computedDoseTime if smart dosing, otherwise fall back to dosingTime
+        unsigned int thisDoseTime = (smartDosing && computedDoseTime > 0) ? computedDoseTime
+                                  : (smartDosing && smartCalPhase)        ? SMART_CAL_DURATION
+                                  : dosingTime;
+        relayDurations[0] = thisDoseTime;
         relayTimers[0]    = now;
-        relayDurations[1] = dosingTime + POST_MIX_DURATION / 1000;
+        relayDurations[1] = thisDoseTime + POST_MIX_DURATION / 1000;
         relayTimers[1]    = now;
         writeRelay(1, true);
         enterState(AUTO_DOSING);
-        Serial.println("[Auto] DOSING: R1+R2 ON for " + String(dosingTime) + "s");
+        Serial.println("[Auto] DOSING: R1+R2 ON for " + String(thisDoseTime) + "s");
       }
       break;
 
@@ -432,6 +504,46 @@ void checkAutoDosing()
         Serial.println("[Auto] Response check: pre=" + String(preDoseEC, 3) +
                        " now=" + String(ecAverage, 3) +
                        " rise=" + String(ecRise, 3));
+
+        // Smart dosing calibration / accuracy check
+        if (smartCalPhase)
+        {
+          if (ecRise >= DOSE_RESPONSE_THRESHOLD)
+          {
+            ecRiseRate = ecRise / (float)SMART_CAL_DURATION;
+            if (wlSensorFound)
+            {
+              float wlDrop = wlBeforeCal - sensors.wl;
+              if (wlDrop > 0.0f) wlDropRate = wlDrop / (float)SMART_CAL_DURATION;
+            }
+            saveSmartCalibration();
+            smartCalibrated = true;
+            Serial.println("[Smart] Calibrated: ec_rate=" + String(ecRiseRate, 5) + " mS/cm/s");
+            String calMsg = "Smart dosing calibrated: ec_rate=" + String(ecRiseRate, 5) +
+                            " rise=" + String(ecRise, 3) + " mS/cm";
+            logDeviceActivity("dosing", calMsg.c_str());
+          }
+          else
+          {
+            Serial.println("[Smart] Calibration dose had no EC rise — will retry");
+          }
+          smartCalPhase = false;
+        }
+        else if (smartDosing && smartCalibrated && computedDoseTime > 0)
+        {
+          float predicted = ecRiseRate * (float)computedDoseTime;
+          if (predicted > 0.0f)
+          {
+            float error = fabsf(ecRise - predicted) / predicted;
+            if (error > SMART_ERROR_THRESHOLD)
+            {
+              Serial.println("[Smart] Prediction error " + String(error * 100.0f, 0) +
+                             "% — re-calibrating next cycle");
+              smartCalibrated  = false;
+              computedDoseTime = 0;
+            }
+          }
+        }
 
         if (ecRise < DOSE_RESPONSE_THRESHOLD)
         {
