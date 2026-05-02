@@ -110,6 +110,15 @@ extern float         ecTarget;
 extern float         ecMinusHys;
 extern unsigned int  dosingTime;
 
+// Smart Dosing
+extern bool          smartDosing;
+extern bool          smartCalibrated;
+extern bool          smartCalPhase;
+extern float         ecRiseRate;
+extern float         wlDropRate;
+extern float         wlBeforeCal;
+extern unsigned int  computedDoseTime;
+
 // EC automation — rolling average
 extern float         ecReadings[EC_SAMPLES];
 extern int           ecReadingIndex;
