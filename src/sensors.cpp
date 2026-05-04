@@ -4,6 +4,7 @@
 // =====================================================
 
 #include "sensors.h"
+#include "logger.h"
 #include "relay.h"    // writeRelay() used in checkAutoDosing
 #include "cloud.h"    // logDeviceActivity()
 
@@ -13,7 +14,7 @@
 
 void initSensors()
 {
-  Serial.println("\n--- Initializing Sensors ---");
+  LOGLN("\n--- Initializing Sensors ---");
 
   // EC Sensor detection: try default ID first, then fall back to range scan
   // Register address 0 attempted first; address 1 used as fallback (varies by sensor model)
@@ -31,12 +32,12 @@ void initSensors()
   {
     ecSensorId    = EC_SENSOR_DEFAULT;
     ecSensorFound = true;
-    Serial.println("EC Sensor: ID " + String(EC_SENSOR_DEFAULT) + " (default)");
+    LOGF("EC Sensor: ID %d (default)\n", EC_SENSOR_DEFAULT);
   }
   else
   {
-    Serial.println("EC Sensor: ID " + String(EC_SENSOR_DEFAULT) + " not responding — scanning IDs " +
-                   String(EC_SCAN_START) + "–" + String(EC_SCAN_END));
+    LOGF("EC Sensor: ID %d not responding — scanning IDs %d–%d\n",
+         EC_SENSOR_DEFAULT, EC_SCAN_START, EC_SCAN_END);
     for (uint8_t id = EC_SCAN_START; id <= EC_SCAN_END; id++)
     {
       if (id == EC_SENSOR_DEFAULT) { delay(30); continue; } // already tried
@@ -44,15 +45,15 @@ void initSensors()
       {
         ecSensorId    = id;
         ecSensorFound = true;
-        Serial.println("EC Sensor: ID " + String(id) + " (scan)");
+        LOGF("EC Sensor: ID %d (scan)\n", id);
         break;
       }
       delay(30);
     }
   }
   if (!ecSensorFound)
-    Serial.println("EC Sensor: not found (tried ID " + String(EC_SENSOR_DEFAULT) +
-                   " + scan " + String(EC_SCAN_START) + "–" + String(EC_SCAN_END) + ")");
+    LOGF("EC Sensor: not found (tried ID %d + scan %d–%d)\n",
+         EC_SENSOR_DEFAULT, EC_SCAN_START, EC_SCAN_END);
 
   // Scan for Water Level Sensor (IDs 13–15)
   wlSensorFound = false;
@@ -68,17 +69,17 @@ void initSensors()
       {
         wlSensorId    = id;
         wlSensorFound = true;
-        Serial.println("Water Level: ID " + String(id));
+        LOGF("Water Level: ID %d\n", id);
         break;
       }
     }
     delay(30);
   }
   if (!wlSensorFound)
-    Serial.println("Water Level: not found (scanned IDs " + String(WL_SCAN_START) + "–" + String(WL_SCAN_END) + ")");
+    LOGF("Water Level: not found (scanned IDs %d–%d)\n", WL_SCAN_START, WL_SCAN_END);
 
   int found = (int)ecSensorFound + (int)wlSensorFound;
-  Serial.println("Found: " + String(found) + "/2 sensors\n");
+  LOGF("Found: %d/2 sensors\n", found);
 
   String msg = "Sensor init: ";
   if (ecSensorFound) msg += "EC(ID=" + String(ecSensorId) + ") ";
@@ -104,9 +105,9 @@ void loadSmartCalibration()
   wifiPrefs.end();
 
   if (smartCalibrated)
-    Serial.println("[Smart] Loaded calibration: ec_rate=" + String(ecRiseRate, 5) + " mS/cm/s");
+    LOGF("[Smart] Loaded calibration: ec_rate=%.5f mS/cm/s\n", ecRiseRate);
   else
-    Serial.println("[Smart] No calibration stored — will calibrate on first smart dose");
+    LOGLN("[Smart] No calibration stored — will calibrate on first smart dose");
 }
 
 void saveSmartCalibration()
@@ -253,11 +254,8 @@ void readSensors()
         "idle","startup_wait","sampling","pre_mix",
         "dosing","post_mix","cooldown","stabilising","alarm"
       };
-      Serial.print("[Auto] state:" + String(stateNames[autoState]));
-      Serial.print(" EC:" + String(sensors.ec, 2));
-      if (ecReadingCount > 0)
-        Serial.print(" Avg:" + String(ecAverage, 2));
-      Serial.println(" samples:" + String(ecReadingCount) + "/" + String(EC_SAMPLES));
+      LOGF("[Auto] state:%s EC:%.2f Avg:%.2f samples:%d/%d\n",
+           stateNames[autoState], sensors.ec, ecAverage, ecReadingCount, EC_SAMPLES);
       lastDebug = millis();
     }
   }
@@ -293,7 +291,7 @@ static void enterState(AutoDosingState next)
 
 static void triggerAlarm(const String& reason)
 {
-  Serial.println("\n[Auto] ALARM: " + reason);
+  LOGLNS("\n[Auto] ALARM: " + reason);
   // Do NOT set autoDosing = false here — the config fetch would re-enable it automatically.
   // Instead, block all activity via AUTO_ALARM state; user must toggle off→on to reset.
   writeRelay(1, false);
@@ -327,7 +325,7 @@ void checkAutoDosing()
       consecutiveIneffectiveDoses = 0;
       stabiliseSkipCount = 0;
       enterState(AUTO_STARTUP_WAIT);
-      Serial.println("[Auto] Starting — waiting " + String(INITIAL_WAIT / 1000) + "s");
+      LOGF("[Auto] Starting — waiting %lus\n", INITIAL_WAIT / 1000);
       break;
 
     // -------------------------------------------------
@@ -337,7 +335,7 @@ void checkAutoDosing()
         ecReadingCount = 0;
         ecReadingIndex = 0;
         enterState(AUTO_SAMPLING);
-        Serial.println("[Auto] Startup wait done — sampling");
+        LOGLN("[Auto] Startup wait done — sampling");
       }
       break;
 
@@ -363,7 +361,7 @@ void checkAutoDosing()
       // Don't interrupt a manually-running relay timer
       if (relayDurations[0] > 0 || relayTimers[0] > 0)
       {
-        Serial.println("[Auto] Skipping — R1 timer already active");
+        LOGLN("[Auto] Skipping — R1 timer already active");
         return;
       }
 
@@ -377,7 +375,7 @@ void checkAutoDosing()
         smartCalPhase = true;
         wlBeforeCal   = sensors.wl;
         thisDoseTime  = SMART_CAL_DURATION;
-        Serial.println("[Smart] Calibration dose: " + String(SMART_CAL_DURATION) + "s");
+        LOGF("[Smart] Calibration dose: %ds\n", SMART_CAL_DURATION);
       }
       else if (smartDosing && smartCalibrated && ecRiseRate > 0.0f)
       {
@@ -385,15 +383,12 @@ void checkAutoDosing()
         float computed   = deficit / ecRiseRate;
         thisDoseTime     = (unsigned int)constrain((int)roundf(computed), SMART_MIN_DOSE, SMART_MAX_DOSE);
         computedDoseTime = thisDoseTime;
-        Serial.println("[Smart] Computed dose: " + String(thisDoseTime) + "s"
-                       " (deficit=" + String(deficit, 3) +
-                       " rate=" + String(ecRiseRate, 5) + ")");
+        LOGF("[Smart] Computed dose: %ds (deficit=%.3f rate=%.5f)\n",
+             thisDoseTime, deficit, ecRiseRate);
       }
 
-      Serial.println("\n[Auto] EC low: avg=" + String(ecAverage, 3) +
-                     " < " + String(ecMinusHys, 2) +
-                     " | Path " + String(autoMixing ? "B (mix)" : "A (no mix)") +
-                     " | dose=" + String(thisDoseTime) + "s");
+      LOGF("\n[Auto] EC low: avg=%.3f < %.2f | Path %s | dose=%ds\n",
+           ecAverage, ecMinusHys, autoMixing ? "B (mix)" : "A (no mix)", thisDoseTime);
 
       ecReadingCount = 0;
       ecReadingIndex = 0;
@@ -402,7 +397,7 @@ void checkAutoDosing()
       {
         writeRelay(2, true);
         enterState(AUTO_PRE_MIX);
-        Serial.println("[Auto] PRE_MIX: R2 ON for " + String(PRE_MIX_DURATION / 1000) + "s");
+        LOGF("[Auto] PRE_MIX: R2 ON for %lus\n", PRE_MIX_DURATION / 1000);
       }
       else
       {
@@ -410,7 +405,7 @@ void checkAutoDosing()
         relayTimers[0]    = now;
         writeRelay(1, true);
         enterState(AUTO_DOSING);
-        Serial.println("[Auto] DOSING: R1 ON for " + String(thisDoseTime) + "s");
+        LOGF("[Auto] DOSING: R1 ON for %ds\n", thisDoseTime);
       }
       break;
     }
@@ -429,7 +424,7 @@ void checkAutoDosing()
         relayTimers[1]    = now;
         writeRelay(1, true);
         enterState(AUTO_DOSING);
-        Serial.println("[Auto] DOSING: R1+R2 ON for " + String(thisDoseTime) + "s");
+        LOGF("[Auto] DOSING: R1+R2 ON for %ds\n", thisDoseTime);
       }
       break;
 
@@ -444,7 +439,7 @@ void checkAutoDosing()
         lastDoseTimestamp = time(nullptr);
         dosesToday++;
 
-        Serial.println("[Auto] Dose complete. doses_today=" + String(dosesToday));
+        LOGF("[Auto] Dose complete. doses_today=%d\n", dosesToday);
         {
           String doseMsg = "Auto-dose executed: " + String(dosingTime) + "s (dose #" + String(dosesToday) + " today)";
           logDeviceActivity("dosing", doseMsg.c_str());
@@ -453,13 +448,13 @@ void checkAutoDosing()
         if (autoMixing)
         {
           enterState(AUTO_POST_MIX);
-          Serial.println("[Auto] POST_MIX: R2 ON for " + String(POST_MIX_DURATION / 1000) + "s");
+          LOGF("[Auto] POST_MIX: R2 ON for %lus\n", POST_MIX_DURATION / 1000);
         }
         else
         {
           stabiliseSkipCount = 0;
           enterState(AUTO_COOLDOWN);
-          Serial.println("[Auto] COOLDOWN (no mix): " + String(POST_DOSE_DELAY_NO_MIX / 1000) + "s");
+          LOGF("[Auto] COOLDOWN (no mix): %lus\n", POST_DOSE_DELAY_NO_MIX / 1000);
         }
       }
       break;
@@ -473,7 +468,7 @@ void checkAutoDosing()
         relayTimers[1]    = 0;
         stabiliseSkipCount = 0;
         enterState(AUTO_COOLDOWN);
-        Serial.println("[Auto] COOLDOWN (mix): " + String(POST_DOSE_DELAY_MIX / 1000) + "s");
+        LOGF("[Auto] COOLDOWN (mix): %lus\n", POST_DOSE_DELAY_MIX / 1000);
       }
       break;
 
@@ -484,8 +479,8 @@ void checkAutoDosing()
       if (now - doseEndTime >= delay)
       {
         enterState(AUTO_STABILISING);
-        Serial.println("[Auto] STABILISING: skipping " +
-                       String(autoMixing ? STABILISE_SKIP_MIX : STABILISE_SKIP_NO_MIX) + " readings");
+        LOGF("[Auto] STABILISING: skipping %d readings\n",
+             autoMixing ? STABILISE_SKIP_MIX : STABILISE_SKIP_NO_MIX);
       }
       break;
     }
@@ -501,9 +496,8 @@ void checkAutoDosing()
       if (ecReadingCount >= EC_SAMPLES)
       {
         float ecRise = ecAverage - preDoseEC;
-        Serial.println("[Auto] Response check: pre=" + String(preDoseEC, 3) +
-                       " now=" + String(ecAverage, 3) +
-                       " rise=" + String(ecRise, 3));
+        LOGF("[Auto] Response check: pre=%.3f now=%.3f rise=%.3f\n",
+             preDoseEC, ecAverage, ecRise);
 
         // Smart dosing calibration / accuracy check
         if (smartCalPhase)
@@ -518,14 +512,16 @@ void checkAutoDosing()
             }
             saveSmartCalibration();
             smartCalibrated = true;
-            Serial.println("[Smart] Calibrated: ec_rate=" + String(ecRiseRate, 5) + " mS/cm/s");
-            String calMsg = "Smart dosing calibrated: ec_rate=" + String(ecRiseRate, 5) +
-                            " rise=" + String(ecRise, 3) + " mS/cm";
-            logDeviceActivity("dosing", calMsg.c_str());
+            LOGF("[Smart] Calibrated: ec_rate=%.5f mS/cm/s\n", ecRiseRate);
+            char calMsg[80];
+            snprintf(calMsg, sizeof(calMsg),
+                     "Smart dosing calibrated: ec_rate=%.5f rise=%.3f mS/cm",
+                     ecRiseRate, ecRise);
+            logDeviceActivity("dosing", calMsg);
           }
           else
           {
-            Serial.println("[Smart] Calibration dose had no EC rise — will retry");
+            LOGLN("[Smart] Calibration dose had no EC rise — will retry");
           }
           smartCalPhase = false;
         }
@@ -537,8 +533,8 @@ void checkAutoDosing()
             float error = fabsf(ecRise - predicted) / predicted;
             if (error > SMART_ERROR_THRESHOLD)
             {
-              Serial.println("[Smart] Prediction error " + String(error * 100.0f, 0) +
-                             "% — re-calibrating next cycle");
+              LOGF("[Smart] Prediction error %.0f%% — re-calibrating next cycle\n",
+                   error * 100.0f);
               smartCalibrated  = false;
               computedDoseTime = 0;
             }
@@ -548,7 +544,7 @@ void checkAutoDosing()
         if (ecRise < DOSE_RESPONSE_THRESHOLD)
         {
           consecutiveIneffectiveDoses++;
-          Serial.println("[Auto] Ineffective dose #" + String(consecutiveIneffectiveDoses));
+          LOGF("[Auto] Ineffective dose #%d\n", consecutiveIneffectiveDoses);
           if (consecutiveIneffectiveDoses >= MAX_INEFFECTIVE_DOSES)
           {
             triggerAlarm("No EC response after " + String(MAX_INEFFECTIVE_DOSES) + " doses");
@@ -561,7 +557,7 @@ void checkAutoDosing()
         }
 
         enterState(AUTO_SAMPLING);
-        Serial.println("[Auto] Back to SAMPLING");
+        LOGLN("[Auto] Back to SAMPLING");
       }
       break;
     }

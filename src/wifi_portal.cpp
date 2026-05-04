@@ -4,6 +4,7 @@
 // =====================================================
 
 #include "wifi_portal.h"
+#include "logger.h"
 const char *PUBLIC_URL = "https://iot.redtone.com/sf500/";
 // =====================================================
 // PORTAL HELPERS
@@ -159,9 +160,9 @@ void startWiFiPortal()
 
   String apSsid = "sf500-" + lastSix;
   bool ok = WiFi.softAP(apSsid.c_str(), AP_PASS, AP_CH, 0, 4);
-  Serial.printf("[AP] ok=%d ssid=%s pass=%s ch=%d ip=%s\n",
-                ok, apSsid.c_str(), AP_PASS, AP_CH,
-                WiFi.softAPIP().toString().c_str());
+  LOGF("[AP] ok=%d ssid=%s ch=%d ip=%s\n",
+       ok, apSsid.c_str(), AP_CH,
+       WiFi.softAPIP().toString().c_str());
 
   dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
 
@@ -194,7 +195,7 @@ void startWiFiPortal()
     WiFi.begin(ssid.c_str(), pass.c_str());
     wifiState = STATE_CONNECTING;
     portalConnectStartMs = millis();
-    Serial.printf("[STA] Connecting to '%s'...\n", ssid.c_str());
+    LOGF("[STA] Connecting to '%s'...\n", ssid.c_str());
 
     // Use meta-refresh — JS is often blocked in captive portal browsers
     sendHtmlResponse(
@@ -251,7 +252,7 @@ void startWiFiPortal()
                           { redirectToRoot(); });
   portalServer.begin();
 
-  Serial.println("[Portal] Connect to: " + apSsid + " / " + String(AP_PASS));
+  LOGF("[Portal] Connect to: %s / %s\n", apSsid.c_str(), AP_PASS);
 }
 
 void handlePortalLoop()
@@ -266,13 +267,13 @@ void handlePortalLoop()
     {
       wifiState = STATE_ONLINE;
       apCloseAt = millis() + 5000; // give browser 5 s to load "Connected!" page
-      Serial.printf("[STA] Connected to '%s', IP=%s — AP closing in 5s\n",
-                    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+      LOGF("[STA] Connected to '%s', IP=%s — AP closing in 5s\n",
+           WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
     }
     else if (portalConnectStartMs > 0 &&
              millis() - portalConnectStartMs > CONNECT_TIMEOUT_MS)
     {
-      Serial.println("[STA] Timeout -> back to portal");
+      LOGLN("[STA] Timeout -> back to portal");
       WiFi.disconnect(true, false);
       wifiState = STATE_PORTAL;
       portalConnectStartMs = 0;
@@ -287,8 +288,8 @@ void handlePortalLoop()
   if (millis() - lastDebug > 5000)
   {
     lastDebug = millis();
-    Serial.printf("[AP] Portal active, clients=%d, state=%d\n",
-                  WiFi.softAPgetStationNum(), (int)wifiState);
+    LOGF("[AP] Portal active, clients=%d, state=%d\n",
+         WiFi.softAPgetStationNum(), (int)wifiState);
   }
 
   // Auto-close AP after timer — then signal main loop to exit portal mode
@@ -299,6 +300,6 @@ void handlePortalLoop()
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
     portalMode = false; // main loop exits portal mode after this
-    Serial.println("[AP] Closed — STA mode only");
+    LOGLN("[AP] Closed — STA mode only");
   }
 }

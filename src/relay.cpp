@@ -4,6 +4,7 @@
 // =====================================================
 
 #include "relay.h"
+#include "logger.h"
 #include "mqtt_handler.h"   // publishRelayStatus()
 #include <HTTPClient.h>
 
@@ -21,7 +22,7 @@ void writeRelay(uint8_t num, bool state)
   relayStates[num - 1] = state;
 
   const char *label = (num == 1) ? " (Dosing)" : " (Mixing)";
-  Serial.println("R" + String(num) + label + " -> " + (state ? "ON" : "OFF"));
+  LOGF("R%d%s -> %s\n", num, label, state ? "ON" : "OFF");
 
   if (WiFi.status() == WL_CONNECTED)
   {
@@ -75,7 +76,7 @@ void checkRelayTimers()
     {
       // Guard against underflow before printing remaining time
       unsigned long remaining = (elapsed < total) ? (total - elapsed) / 1000 : 0;
-      Serial.println("R" + String(i + 1) + " timer: " + String(remaining) + "s remaining");
+      LOGF("R%d timer: %lus remaining\n", i + 1, remaining);
       lastDebug[i] = now;
     }
 
@@ -84,7 +85,7 @@ void checkRelayTimers()
       relayDurations[i] = 0;
       relayTimers[i]    = 0;
       writeRelay(i + 1, false);
-      Serial.println("R" + String(i + 1) + " timer expired");
+      LOGF("R%d timer expired\n", i + 1);
     }
   }
 }
@@ -127,8 +128,8 @@ void checkSchedules()
     if (relayDurations[idx] > 0)
       continue;  // relay already running, skip
 
-    Serial.println("\n[SCHEDULE] " + sch.name);
-    Serial.printf("  R%d ON for %ds\n", sch.relayNum, sch.duration);
+    LOGLNS("\n[SCHEDULE] " + sch.name);
+    LOGF("  R%d ON for %ds\n", sch.relayNum, sch.duration);
 
     lastTriggeredTime[i]  = (unsigned long)marker;
     relayDurations[idx]   = sch.duration;
@@ -174,35 +175,35 @@ void handleSerialCommands()
   }
   else if (cmd == "WIFIINFO")
   {
-    Serial.println("\n--- WiFi Info ---");
+    LOGLN("\n--- WiFi Info ---");
     if (WiFi.status() == WL_CONNECTED)
     {
-      Serial.println("Status: Connected");
-      Serial.println("SSID:   " + WiFi.SSID());
-      Serial.println("IP:     " + WiFi.localIP().toString());
-      Serial.println("RSSI:   " + String(WiFi.RSSI()) + " dBm");
+      LOGLN("Status: Connected");
+      LOGLNS("SSID:   " + WiFi.SSID());
+      LOGLNS("IP:     " + WiFi.localIP().toString());
+      LOGF("RSSI:   %d dBm\n", WiFi.RSSI());
     }
     else
     {
-      Serial.println("Status: Disconnected");
+      LOGLN("Status: Disconnected");
     }
     wifiPrefs.begin("wifi", true);
-    Serial.println("Saved SSID: " + wifiPrefs.getString("ssid", "(none)"));
+    LOGLNS("Saved SSID: " + wifiPrefs.getString("ssid", "(none)"));
     wifiPrefs.end();
-    Serial.println("-----------------\n");
+    LOGLN("-----------------\n");
   }
   else if (cmd == "HELP")
   {
-    Serial.println("\n--- Commands ---");
-    Serial.println("R1ON/R1OFF   - Relay 1 (Dosing)");
-    Serial.println("R2ON/R2OFF   - Relay 2 (Mixing)");
-    Serial.println("ALLON/ALLOFF - All relays");
-    Serial.println("WIFIINFO     - WiFi status");
-    Serial.println("HELP         - This list");
-    Serial.println("----------------\n");
+    LOGLN("\n--- Commands ---");
+    LOGLN("R1ON/R1OFF   - Relay 1 (Dosing)");
+    LOGLN("R2ON/R2OFF   - Relay 2 (Mixing)");
+    LOGLN("ALLON/ALLOFF - All relays");
+    LOGLN("WIFIINFO     - WiFi status");
+    LOGLN("HELP         - This list");
+    LOGLN("----------------\n");
   }
   else
   {
-    Serial.println("Unknown: " + cmd + " (type HELP)");
+    LOGLNS("Unknown: " + cmd + " (type HELP)");
   }
 }

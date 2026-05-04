@@ -4,6 +4,7 @@
 // =====================================================
 
 #include "cloud.h"
+#include "logger.h"
 #include <HTTPClient.h>
 
 // =====================================================
@@ -17,7 +18,7 @@ void syncTimeWithNTP()
     "time.cloudflare.com", "time.windows.com"
   };
 
-  Serial.print("Syncing NTP");
+  LOGLN("Syncing NTP...");
 
   for (int s = 0; s < 4; s++)
   {
@@ -30,18 +31,16 @@ void syncTimeWithNTP()
       {
         struct tm ti;
         localtime_r(&now, &ti);
-        Serial.println(" OK");
-        Serial.printf("Time: %04d-%02d-%02d %02d:%02d:%02d\n",
-                      ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
-                      ti.tm_hour, ti.tm_min, ti.tm_sec);
+        LOGF("NTP OK: %04d-%02d-%02d %02d:%02d:%02d\n",
+             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+             ti.tm_hour, ti.tm_min, ti.tm_sec);
         return;
       }
       delay(500);
-      Serial.print(".");
     }
   }
 
-  Serial.println(" FAILED");
+  LOGLN("NTP FAILED");
 }
 
 // =====================================================
@@ -61,12 +60,12 @@ void registerDevice()
   http.setTimeout(15000);
 
   int code = http.GET();
-  Serial.println("[REG] HTTP code: " + String(code));
+  LOGF("[REG] HTTP code: %d\n", code);
 
   if (code == 200)
   {
     String response = http.getString();
-    Serial.println("[REG] Response: " + response.substring(0, 80));
+    LOGLNS("[REG] Response: " + response.substring(0, 80));
 
     if (response == "[]" || response.length() < 5)
     {
@@ -103,7 +102,7 @@ void registerDevice()
 
   http.end();
   if (isRegistered)
-    Serial.println("Device registered");
+    LOGLN("Device registered");
 }
 
 // =====================================================
@@ -155,7 +154,7 @@ void uploadSensorConfig()
   int code = http.PATCH(payload);
   http.end();
 
-  Serial.println(code == 200 || code == 204 ? "Sensor config uploaded" : "Config upload failed");
+  LOGLN(code == 200 || code == 204 ? "Sensor config uploaded" : "Config upload failed");
 }
 
 // =====================================================
@@ -213,7 +212,7 @@ void uploadSensorReadings()
 
     int code = http.POST(payload);
     if (code == 200 || code == 201)
-      Serial.println("Uploaded " + String(arr.size()) + " readings");
+      LOGF("Uploaded %u readings\n", (unsigned)arr.size());
     http.end();
   }
 }
@@ -283,7 +282,7 @@ void fetchDeviceConfig()
       autoDosing = newVal;
       autoDosingStartTime = autoDosing ? millis() : 0;
       autoState = AUTO_IDLE; // state machine resets on any toggle
-      Serial.println(autoDosing ? "\n[CONFIG] Auto-Dosing ON" : "\n[CONFIG] Auto-Dosing OFF");
+      LOGLN(autoDosing ? "\n[CONFIG] Auto-Dosing ON" : "\n[CONFIG] Auto-Dosing OFF");
       changed = true;
     }
   }
@@ -294,7 +293,7 @@ void fetchDeviceConfig()
     if (newVal != autoMixing)
     {
       autoMixing = newVal;
-      Serial.println(autoMixing ? "[CONFIG] Mixing Pump: ENABLED" : "[CONFIG] Mixing Pump: DISABLED");
+      LOGLN(autoMixing ? "[CONFIG] Mixing Pump: ENABLED" : "[CONFIG] Mixing Pump: DISABLED");
       changed = true;
     }
   }
@@ -311,8 +310,7 @@ void fetchDeviceConfig()
       ecReadingIndex = 0;
       autoState = AUTO_IDLE; // reset state machine when target changes
 
-      Serial.println("\n[CONFIG] EC Target: " + String(ecTarget, 2) +
-                     " (dose below " + String(ecMinusHys, 2) + ")");
+      LOGF("\n[CONFIG] EC Target: %.2f (dose below %.2f)\n", ecTarget, ecMinusHys);
       changed = true;
     }
   }
@@ -323,7 +321,7 @@ void fetchDeviceConfig()
     if (newVal > 0 && newVal != dosingTime)
     {
       dosingTime = newVal;
-      Serial.println("[CONFIG] Dosing Time: " + String(dosingTime) + "s");
+      LOGF("[CONFIG] Dosing Time: %ds\n", dosingTime);
       changed = true;
     }
   }
@@ -334,13 +332,13 @@ void fetchDeviceConfig()
     if (newVal != smartDosing)
     {
       smartDosing = newVal;
-      Serial.println(smartDosing ? "[CONFIG] Smart Dosing ON" : "[CONFIG] Smart Dosing OFF");
+      LOGLN(smartDosing ? "[CONFIG] Smart Dosing ON" : "[CONFIG] Smart Dosing OFF");
       changed = true;
     }
   }
 
   if (changed && autoDosing)
-    Serial.println("[INFO] Dose when EC < " + String(ecMinusHys, 2) + "\n");
+    LOGF("[INFO] Dose when EC < %.2f\n", ecMinusHys);
 }
 
 // =====================================================
@@ -406,10 +404,10 @@ void fetchSchedules()
     scheduleCount++;
   }
 
-  Serial.println("\n[SCHEDULE] " + String(scheduleCount) + " active");
+  LOGF("\n[SCHEDULE] %d active\n", scheduleCount);
   for (int i = 0; i < scheduleCount; i++)
   {
-    Serial.printf("  [%lu] %s: R%d @ %02d:%02d for %ds\n",
+    LOGF("  [%lu] %s: R%d @ %02d:%02d for %ds\n",
                   (unsigned long)schedules[i].id,
                   schedules[i].name.c_str(),
                   schedules[i].relayNum,

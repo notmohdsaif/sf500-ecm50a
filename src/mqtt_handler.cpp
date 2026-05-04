@@ -4,6 +4,7 @@
 // =====================================================
 
 #include "mqtt_handler.h"
+#include "logger.h"
 #include "relay.h"    // writeRelay()
 
 // =====================================================
@@ -34,7 +35,7 @@ void reconnectMQTT()
         mqttClient.publish(mqttTopicData.c_str(), buf);
       }
 
-      Serial.println("MQTT connected");
+      LOGLN("MQTT connected");
       return;
     }
     delay(2000);
@@ -62,12 +63,12 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       String cmd = doc["cmd"].as<String>();
       if (cmd == "forget")
       {
-        Serial.println("[WiFi] Forget command received");
+        LOGLN("[WiFi] Forget command received");
         pendingWifiForget = true;
       }
       else if (cmd == "portal")
       {
-        Serial.println("[WiFi] Portal command received");
+        LOGLN("[WiFi] Portal command received");
         pendingWifiPortal = true;
       }
     }
@@ -80,7 +81,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   // Startup protection: ignore commands for first 5 seconds
   if (!startupComplete && (millis() - startupTime < 5000))
   {
-    Serial.println("Ignoring MQTT during startup");
+    LOGLN("Ignoring MQTT during startup");
     return;
   }
   startupComplete = true;
@@ -110,7 +111,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       relayDurations[i] = duration;
       relayTimers[i]    = millis();
       writeRelay(i + 1, true);
-      Serial.println("R" + String(i + 1) + " timed for " + String(duration) + "s");
+      LOGF("R%d timed for %ds\n", i + 1, duration);
     }
     else
     {
