@@ -71,7 +71,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.0.3"
+#define FIRMWARE_VERSION "1.0.4"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"
@@ -79,3 +79,7 @@
 
 // OTA check interval
 #define OTA_CHECK_INTERVAL (6UL * 60UL * 60UL * 1000UL)
+
+// Remote serial logging over MQTT — comment out to disable entirely
+#define ENABLE_OTA_LOGS
+#define LOG_PUBLISH_INTERVAL 5000UL

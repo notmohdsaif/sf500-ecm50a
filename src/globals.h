@@ -165,3 +165,8 @@ extern unsigned long lastTriggeredTime[MAX_SCHEDULES];
 extern unsigned long startupTime;
 extern bool          startupComplete;
 
+// Remote serial logging
+#ifdef ENABLE_OTA_LOGS
+extern String         topicLogs;
+extern unsigned long  lastLogPublish;
+#endif
