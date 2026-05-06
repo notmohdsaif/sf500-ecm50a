@@ -29,6 +29,7 @@ WiFiState wifiState = STATE_PORTAL;
 std::vector<NetItem> scanList;
 bool portalMode = false;
 unsigned long portalConnectStartMs = 0;
+unsigned long portalStartedAt      = 0;
 
 String deviceMAC;
 String deviceName;
@@ -276,21 +277,35 @@ void loop()
     String savedPass = wifiPrefs.getString("pass", "");
     wifiPrefs.end();
 
+    bool reconnected = false;
     if (savedSSID.length() > 0)
     {
-      WiFi.begin(savedSSID.c_str(), savedPass.c_str());
-
-      unsigned long start = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
+      for (int attempt = 1; attempt <= 3; attempt++)
       {
-        delay(200);
-        checkRelayTimers();
-        handleSerialCommands();
+        LOGF("[WiFi] Reconnect attempt %d/3...\n", attempt);
+        WiFi.disconnect(false);
+        WiFi.begin(savedSSID.c_str(), savedPass.c_str());
+
+        unsigned long start = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
+        {
+          delay(200);
+          checkRelayTimers();
+          handleSerialCommands();
+        }
+
+        if (WiFi.status() == WL_CONNECTED)
+        {
+          reconnected = true;
+          break;
+        }
+        LOGF("[WiFi] Attempt %d failed\n", attempt);
       }
     }
 
-    if (WiFi.status() != WL_CONNECTED)
+    if (!reconnected)
     {
+      LOGLN("[WiFi] All attempts failed, opening hotspot...");
       startWiFiPortal();
       return;
     }
