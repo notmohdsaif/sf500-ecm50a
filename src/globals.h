@@ -74,6 +74,7 @@ extern WiFiState            wifiState;
 extern std::vector<NetItem> scanList;
 extern bool                 portalMode;
 extern unsigned long        portalConnectStartMs;
+extern unsigned long        portalStartedAt;
 
 // Device identity
 extern String deviceMAC;

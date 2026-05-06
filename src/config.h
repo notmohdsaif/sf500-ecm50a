@@ -16,6 +16,7 @@
 #define PORTAL_ROOT "http://sfconnect.com/"
 #define CONNECT_TIMEOUT_MS 30000UL
 #define AUTO_CONNECT_TIMEOUT_MS 15000UL
+#define PORTAL_SAVED_RETRY_INTERVAL_MS (5UL * 60UL * 1000UL) // retry saved creds every 5 min while portal is open
 
 // Supabase
 #define SUPABASE_URL "https://qkqeysggrqhxizkdmbhx.supabase.co"
