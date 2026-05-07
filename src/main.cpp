@@ -56,7 +56,7 @@ unsigned int relayDurations[2] = {0, 0};
 bool autoDosing = false;
 bool autoMixing = false;
 float ecTarget = 1.5f;
-float ecMinusHys = 0.0f;
+float ecMinusHys = ecTarget - EC_HYSTERESIS;
 unsigned int dosingTime = 30;
 
 bool         smartDosing      = false;
