@@ -301,10 +301,10 @@ void fetchDeviceConfig()
   if (!dev["ec_target"].isNull())
   {
     float newVal = dev["ec_target"];
+    ecMinusHys = newVal - EC_HYSTERESIS;
     if (abs(newVal - ecTarget) > 0.01f)
     {
-      ecTarget   = newVal;
-      ecMinusHys = ecTarget - EC_HYSTERESIS;
+      ecTarget = newVal;
 
       ecReadingCount = 0;
       ecReadingIndex = 0;
