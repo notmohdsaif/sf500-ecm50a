@@ -342,11 +342,19 @@ void checkAutoDosing()
     // -------------------------------------------------
     case AUTO_SAMPLING:
     {
-      // EC ceiling check
+      // EC ceiling check — log warning and hold, do not dose; ec_high alarm fires on dashboard
       if (ecReadingCount >= EC_SAMPLES && ecAverage > ecTarget + EC_CEILING_MARGIN)
       {
-        triggerAlarm("EC above ceiling (" + String(ecAverage, 2) +
-                     " > " + String(ecTarget + EC_CEILING_MARGIN, 2) + ")");
+        static float lastLoggedCeilingEc = -1.0f;
+        if (fabsf(ecAverage - lastLoggedCeilingEc) > 0.05f)
+        {
+          LOGF("[Auto] EC above ceiling (%.2f > %.2f) — holding, no dose\n",
+               ecAverage, ecTarget + EC_CEILING_MARGIN);
+          logDeviceActivity("dosing", ("Auto-dosing holding: EC above ceiling (" +
+                            String(ecAverage, 2) + " > " +
+                            String(ecTarget + EC_CEILING_MARGIN, 2) + ")").c_str());
+          lastLoggedCeilingEc = ecAverage;
+        }
         return;
       }
 
@@ -362,6 +370,14 @@ void checkAutoDosing()
       if (relayDurations[0] > 0 || relayTimers[0] > 0)
       {
         LOGLN("[Auto] Skipping — R1 timer already active");
+        return;
+      }
+
+      // Water level minimum check — soft block, no alarm
+      if (wlSensorFound && minWlDosing > 0 && (unsigned int)sensors.wl < minWlDosing)
+      {
+        LOGF("[Auto] Skipping — water level too low (%dmm < %dmm min)\n",
+             (int)sensors.wl, minWlDosing);
         return;
       }
 
@@ -393,6 +409,8 @@ void checkAutoDosing()
       ecReadingCount = 0;
       ecReadingIndex = 0;
 
+      activeDoseTime = thisDoseTime;
+
       if (autoMixing)
       {
         writeRelay(2, true);
@@ -418,6 +436,7 @@ void checkAutoDosing()
         unsigned int thisDoseTime = (smartDosing && computedDoseTime > 0) ? computedDoseTime
                                   : (smartDosing && smartCalPhase)        ? SMART_CAL_DURATION
                                   : dosingTime;
+        activeDoseTime    = thisDoseTime;
         relayDurations[0] = thisDoseTime;
         relayTimers[0]    = now;
         relayDurations[1] = thisDoseTime + POST_MIX_DURATION / 1000;
@@ -430,7 +449,7 @@ void checkAutoDosing()
 
     // -------------------------------------------------
     case AUTO_DOSING:
-      if (now - autoStateEnteredAt >= (unsigned long)dosingTime * 1000UL)
+      if (now - autoStateEnteredAt >= (unsigned long)activeDoseTime * 1000UL)
       {
         writeRelay(1, false);
         relayDurations[0] = 0;
@@ -441,7 +460,20 @@ void checkAutoDosing()
 
         LOGF("[Auto] Dose complete. doses_today=%d\n", dosesToday);
         {
-          String doseMsg = "Auto-dose executed: " + String(dosingTime) + "s (dose #" + String(dosesToday) + " today)";
+          String doseMsg;
+          if (smartDosing && smartCalPhase)
+          {
+            doseMsg = "Smart-dose calibration: " + String(activeDoseTime) + "s (dose #" + String(dosesToday) + " today)";
+          }
+          else if (smartDosing && smartCalibrated && computedDoseTime > 0)
+          {
+            doseMsg = "Smart-dose executed: " + String(activeDoseTime) + "s -> target " +
+                      String(ecTarget, 1) + " mS/cm (dose #" + String(dosesToday) + " today)";
+          }
+          else
+          {
+            doseMsg = "Auto-dose executed: " + String(activeDoseTime) + "s (dose #" + String(dosesToday) + " today)";
+          }
           logDeviceActivity("dosing", doseMsg.c_str());
         }
 
