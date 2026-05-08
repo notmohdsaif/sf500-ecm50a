@@ -147,6 +147,8 @@ extern time_t          lastDoseTimestamp;
 extern unsigned long   doseEndTime;
 extern int             stabiliseSkipCount;
 extern unsigned long   autoDosingStartTime;
+extern unsigned int    activeDoseTime;   // actual duration used this cycle (smart or fixed)
+extern unsigned int    minWlDosing;      // min water level mm before dosing fires (0=disabled)
 
 // Timing state
 extern unsigned long lastSensorRead;

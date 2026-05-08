@@ -252,7 +252,7 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing";
 
   if (!http.begin(secureClient, url))
     return;
@@ -267,7 +267,7 @@ void fetchDeviceConfig()
   String response = http.getString();
   http.end();
 
-  StaticJsonDocument<320> doc;
+  StaticJsonDocument<384> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
   if (doc.size() == 0) return;
 
@@ -334,6 +334,19 @@ void fetchDeviceConfig()
       smartDosing = newVal;
       LOGLN(smartDosing ? "[CONFIG] Smart Dosing ON" : "[CONFIG] Smart Dosing OFF");
       changed = true;
+    }
+  }
+
+  if (!dev["min_wl_dosing"].isNull())
+  {
+    unsigned int newVal = dev["min_wl_dosing"].as<unsigned int>();
+    if (newVal != minWlDosing)
+    {
+      minWlDosing = newVal;
+      if (minWlDosing > 0)
+        LOGF("[CONFIG] Min WL for dosing: %dmm\n", minWlDosing);
+      else
+        LOGLN("[CONFIG] Min WL for dosing: disabled");
     }
   }
 
