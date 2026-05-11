@@ -456,6 +456,14 @@ void checkAutoDosing()
         relayTimers[0]    = 0;
         doseEndTime       = now;
         lastDoseTimestamp = time(nullptr);
+        {
+          struct tm ti;
+          getLocalTime(&ti);
+          if (ti.tm_mday != lastDoseDay) {
+            dosesToday  = 0;
+            lastDoseDay = ti.tm_mday;
+          }
+        }
         dosesToday++;
 
         LOGF("[Auto] Dose complete. doses_today=%d\n", dosesToday);

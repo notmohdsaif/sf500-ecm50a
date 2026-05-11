@@ -76,6 +76,7 @@ unsigned long   autoStateEnteredAt       = 0;
 float           preDoseEC                = 0.0f;
 int             consecutiveIneffectiveDoses = 0;
 int             dosesToday               = 0;
+int             lastDoseDay              = -1;
 time_t          lastDoseTimestamp        = 0;
 unsigned long   doseEndTime              = 0;
 int             stabiliseSkipCount       = 0;
