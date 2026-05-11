@@ -143,6 +143,7 @@ extern unsigned long   autoStateEnteredAt;
 extern float           preDoseEC;
 extern int             consecutiveIneffectiveDoses;
 extern int             dosesToday;
+extern int             lastDoseDay;
 extern time_t          lastDoseTimestamp;
 extern unsigned long   doseEndTime;
 extern int             stabiliseSkipCount;
