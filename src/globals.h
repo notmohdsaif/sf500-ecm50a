@@ -118,7 +118,10 @@ extern bool          smartCalPhase;
 extern float         ecRiseRate;
 extern float         wlDropRate;
 extern float         wlBeforeCal;
+extern float         wlAtCal;           // WL at calibration time — persisted to NVS for WL correction
 extern unsigned int  computedDoseTime;
+extern unsigned int  actualCalDuration; // actual calibration dose length used (≥ SMART_CAL_DURATION)
+extern int           calRetryCount;     // consecutive calibration failures (separate from production doses)
 
 // EC automation — rolling average
 extern float         ecReadings[EC_SAMPLES];

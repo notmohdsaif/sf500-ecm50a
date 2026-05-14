@@ -59,13 +59,16 @@ float ecTarget = 1.5f;
 float ecMinusHys = ecTarget - EC_HYSTERESIS;
 unsigned int dosingTime = 30;
 
-bool         smartDosing      = false;
-bool         smartCalibrated  = false;
-bool         smartCalPhase    = false;
-float        ecRiseRate       = 0.0f;
-float        wlDropRate       = 0.0f;
-float        wlBeforeCal      = 0.0f;
-unsigned int computedDoseTime = 0;
+bool         smartDosing       = false;
+bool         smartCalibrated   = false;
+bool         smartCalPhase     = false;
+float        ecRiseRate        = 0.0f;
+float        wlDropRate        = 0.0f;
+float        wlBeforeCal       = 0.0f;
+float        wlAtCal           = 0.0f;
+unsigned int computedDoseTime  = 0;
+unsigned int actualCalDuration = 0;
+int          calRetryCount     = 0;
 float ecReadings[EC_SAMPLES];
 int ecReadingIndex = 0;
 int ecReadingCount = 0;
@@ -108,11 +111,25 @@ unsigned long lastLogPublish = 0;
 // SETUP
 // =====================================================
 
+static const char* resetReasonStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_SW:        return "SW_RESTART";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WATCHDOG";
+    case ESP_RST_TASK_WDT:  return "TASK_WATCHDOG";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_DEEPSLEEP: return "DEEP_SLEEP";
+    default:                return "OTHER";
+  }
+}
+
 void setup()
 {
   Serial.begin(9600);
   delay(2000);
   LOGLN("\n\n=== ESP32-S3 ECM50-A SF500 System v2.1 ===\n");
+  LOGF("[DIAG] Reset: %s | Heap: %d bytes\n", resetReasonStr(esp_reset_reason()), ESP.getFreeHeap());
 
   // --- Relays ---
   pinMode(RELAY1_PIN, OUTPUT);
@@ -189,7 +206,7 @@ void setup()
     {
       wifiState = STATE_ONLINE;
       portalMode = false;
-      LOGF("\n[WiFi] Connected, IP=%s\n", WiFi.localIP().toString().c_str());
+      LOGF("\n[WiFi] Connected, IP=%s RSSI=%ddBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     }
     else
     {

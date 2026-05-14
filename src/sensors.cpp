@@ -98,14 +98,27 @@ void loadSmartCalibration()
   uint8_t cal = wifiPrefs.getUChar("calibrated", 0);
   if (cal)
   {
-    ecRiseRate      = wifiPrefs.getFloat("ec_rate", 0.0f);
-    wlDropRate      = wifiPrefs.getFloat("wl_rate", 0.0f);
+    ecRiseRate = wifiPrefs.getFloat("ec_rate", 0.0f);
+    wlDropRate = wifiPrefs.getFloat("wl_rate", 0.0f);
+    wlAtCal    = wifiPrefs.getFloat("wl_at_cal", 0.0f);
+
+    // P5: reject physically implausible rates (valid range: 0.0003 – 0.02 mS/cm/s)
+    if (ecRiseRate < 0.0003f || ecRiseRate > 0.02f)
+    {
+      LOGF("[Smart] ec_rate %.5f out of bounds — discarding calibration\n", ecRiseRate);
+      ecRiseRate = 0.0f;
+    }
     smartCalibrated = (ecRiseRate > 0.0f);
   }
   wifiPrefs.end();
 
   if (smartCalibrated)
-    LOGF("[Smart] Loaded calibration: ec_rate=%.5f mS/cm/s\n", ecRiseRate);
+  {
+    LOGF("[Smart] Loaded calibration: ec_rate=%.5f wl_at_cal=%.0f\n", ecRiseRate, wlAtCal);
+    // R1 guard: wlAtCal missing means first boot after firmware update — WL correction skipped
+    if (wlAtCal <= 0.0f)
+      LOGLN("[Smart] wl_at_cal not set — WL correction disabled until re-calibration");
+  }
   else
     LOGLN("[Smart] No calibration stored — will calibrate on first smart dose");
 }
@@ -116,6 +129,7 @@ void saveSmartCalibration()
   wifiPrefs.putUChar("calibrated", 1);
   wifiPrefs.putFloat("ec_rate", ecRiseRate);
   wifiPrefs.putFloat("wl_rate", wlDropRate);
+  wifiPrefs.putFloat("wl_at_cal", wlBeforeCal);  // P10: persist WL at calibration time
   wifiPrefs.end();
 }
 
@@ -324,6 +338,7 @@ void checkAutoDosing()
       ecReadingIndex = 0;
       consecutiveIneffectiveDoses = 0;
       stabiliseSkipCount = 0;
+      calRetryCount = 0;
       enterState(AUTO_STARTUP_WAIT);
       LOGF("[Auto] Starting — waiting %lus\n", INITIAL_WAIT / 1000);
       break;
@@ -388,16 +403,30 @@ void checkAutoDosing()
       unsigned int thisDoseTime = dosingTime;
       if (smartDosing && !smartCalibrated)
       {
-        smartCalPhase = true;
-        wlBeforeCal   = sensors.wl;
-        thisDoseTime  = SMART_CAL_DURATION;
-        LOGF("[Smart] Calibration dose: %ds\n", SMART_CAL_DURATION);
+        // P7: scale calibration dose with dosingTime so large tanks get enough coverage
+        actualCalDuration = max((unsigned int)SMART_CAL_DURATION, dosingTime);
+        smartCalPhase     = true;
+        wlBeforeCal       = sensors.wl;
+        thisDoseTime      = actualCalDuration;
+        LOGF("[Smart] Calibration dose: %ds (WL=%.0f)\n", actualCalDuration, wlBeforeCal);
       }
       else if (smartDosing && smartCalibrated && ecRiseRate > 0.0f)
       {
-        float deficit    = ecTarget - ecAverage;
-        float computed   = deficit / ecRiseRate;
-        thisDoseTime     = (unsigned int)constrain((int)roundf(computed), SMART_MIN_DOSE, SMART_MAX_DOSE);
+        float deficit = ecTarget - ecAverage;
+        float computed = deficit / ecRiseRate;
+        thisDoseTime  = (unsigned int)constrain((int)roundf(computed), SMART_MIN_DOSE, SMART_MAX_DOSE);
+
+        // P1: WL correction — same dose is more potent at lower WL (dilution principle)
+        // ΔEC ∝ 1/WL, so correct by (WL_now / WL_cal). R1 guard: skip if wlAtCal not set.
+        if (wlSensorFound && wlAtCal > 0.0f && sensors.wl > 0.0f)
+        {
+          float wlFactor = constrain(sensors.wl / wlAtCal, 0.0f, SMART_WL_FACTOR_MAX);
+          thisDoseTime   = (unsigned int)constrain((int)roundf(thisDoseTime * wlFactor),
+                                                   SMART_MIN_DOSE, SMART_MAX_DOSE);
+          LOGF("[Smart] WL correction: factor=%.3f (wl=%.0f cal_wl=%.0f) -> %ds\n",
+               wlFactor, sensors.wl, wlAtCal, thisDoseTime);
+        }
+
         computedDoseTime = thisDoseTime;
         LOGF("[Smart] Computed dose: %ds (deficit=%.3f rate=%.5f)\n",
              thisDoseTime, deficit, ecRiseRate);
@@ -434,7 +463,7 @@ void checkAutoDosing()
       {
         // Use computedDoseTime if smart dosing, otherwise fall back to dosingTime
         unsigned int thisDoseTime = (smartDosing && computedDoseTime > 0) ? computedDoseTime
-                                  : (smartDosing && smartCalPhase)        ? SMART_CAL_DURATION
+                                  : (smartDosing && smartCalPhase)        ? actualCalDuration
                                   : dosingTime;
         activeDoseTime    = thisDoseTime;
         relayDurations[0] = thisDoseTime;
@@ -449,6 +478,38 @@ void checkAutoDosing()
 
     // -------------------------------------------------
     case AUTO_DOSING:
+      // P0: abort dose early if EC already exceeded target + margin
+      // Guards against stale calibration overshooting before time elapses.
+      // In Path B, both relays are stopped so R2 is not left running uncontrolled (R3).
+      if (ecSensorFound && sensors.ec > ecTarget + DOSE_ABORT_MARGIN)
+      {
+        writeRelay(1, false);
+        relayDurations[0] = 0;
+        relayTimers[0]    = 0;
+        if (autoMixing)
+        {
+          writeRelay(2, false);
+          relayDurations[1] = 0;
+          relayTimers[1]    = 0;
+        }
+        doseEndTime       = now;
+        lastDoseTimestamp = time(nullptr);
+        {
+          struct tm ti;
+          getLocalTime(&ti);
+          if (ti.tm_mday != lastDoseDay) { dosesToday = 0; lastDoseDay = ti.tm_mday; }
+        }
+        dosesToday++;
+        stabiliseSkipCount = 0;
+        LOGF("[Auto] Dose aborted: EC %.2f exceeded target+margin (%.2f)\n",
+             sensors.ec, ecTarget + DOSE_ABORT_MARGIN);
+        logDeviceActivity("dosing", ("Dose aborted early: EC " +
+                          String(sensors.ec, 2) + " > " +
+                          String(ecTarget + DOSE_ABORT_MARGIN, 2)).c_str());
+        enterState(AUTO_COOLDOWN);
+        break;
+      }
+
       if (now - autoStateEnteredAt >= (unsigned long)activeDoseTime * 1000UL)
       {
         writeRelay(1, false);
@@ -539,21 +600,27 @@ void checkAutoDosing()
         LOGF("[Auto] Response check: pre=%.3f now=%.3f rise=%.3f\n",
              preDoseEC, ecAverage, ecRise);
 
+        // P8: save before the block clears it — needed to guard ineffective dose counter below
+        bool wasCalPhase = smartCalPhase;
+
         // Smart dosing calibration / accuracy check
         if (smartCalPhase)
         {
           if (ecRise >= DOSE_RESPONSE_THRESHOLD)
           {
-            ecRiseRate = ecRise / (float)SMART_CAL_DURATION;
+            // P9: use actual calibration dose duration, not the compile-time constant
+            ecRiseRate = ecRise / (float)actualCalDuration;
             if (wlSensorFound)
             {
               float wlDrop = wlBeforeCal - sensors.wl;
-              if (wlDrop > 0.0f) wlDropRate = wlDrop / (float)SMART_CAL_DURATION;
+              if (wlDrop > 0.0f) wlDropRate = wlDrop / (float)actualCalDuration;
             }
+            wlAtCal         = wlBeforeCal;  // P10: update in-memory value immediately
             saveSmartCalibration();
             smartCalibrated = true;
-            LOGF("[Smart] Calibrated: ec_rate=%.5f mS/cm/s\n", ecRiseRate);
-            char calMsg[80];
+            calRetryCount   = 0;
+            LOGF("[Smart] Calibrated: ec_rate=%.5f wl_at_cal=%.0f\n", ecRiseRate, wlAtCal);
+            char calMsg[96];
             snprintf(calMsg, sizeof(calMsg),
                      "Smart dosing calibrated: ec_rate=%.5f rise=%.3f mS/cm",
                      ecRiseRate, ecRise);
@@ -561,7 +628,15 @@ void checkAutoDosing()
           }
           else
           {
-            LOGLN("[Smart] Calibration dose had no EC rise — will retry");
+            // P8: track calibration retries separately — high WL produces low rise, not a pump fault
+            calRetryCount++;
+            LOGF("[Smart] Calibration had no EC rise — retry %d/%d\n",
+                 calRetryCount, SMART_CAL_MAX_RETRIES);
+            if (calRetryCount >= SMART_CAL_MAX_RETRIES)
+            {
+              triggerAlarm("Smart calibration failed after " + String(calRetryCount) + " attempts");
+              return;
+            }
           }
           smartCalPhase = false;
         }
@@ -581,19 +656,23 @@ void checkAutoDosing()
           }
         }
 
+        // P8: calibration dose failures are not pump failures — use separate counter above
         if (ecRise < DOSE_RESPONSE_THRESHOLD)
         {
-          consecutiveIneffectiveDoses++;
-          LOGF("[Auto] Ineffective dose #%d\n", consecutiveIneffectiveDoses);
-          if (consecutiveIneffectiveDoses >= MAX_INEFFECTIVE_DOSES)
+          if (!wasCalPhase)
           {
-            triggerAlarm("No EC response after " + String(MAX_INEFFECTIVE_DOSES) + " doses");
-            return;
+            consecutiveIneffectiveDoses++;
+            LOGF("[Auto] Ineffective dose #%d\n", consecutiveIneffectiveDoses);
+            if (consecutiveIneffectiveDoses >= MAX_INEFFECTIVE_DOSES)
+            {
+              triggerAlarm("No EC response after " + String(MAX_INEFFECTIVE_DOSES) + " doses");
+              return;
+            }
           }
         }
         else
         {
-          consecutiveIneffectiveDoses = 0;
+          consecutiveIneffectiveDoses = 0;  // any successful dose (cal or production) resets counter
         }
 
         enterState(AUTO_SAMPLING);
