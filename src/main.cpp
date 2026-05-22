@@ -86,6 +86,8 @@ int             stabiliseSkipCount       = 0;
 unsigned long   autoDosingStartTime      = 0;
 unsigned int    activeDoseTime           = 0;
 unsigned int    minWlDosing              = 0;
+bool            lastDoseAborted          = false;
+unsigned int    actualDoseElapsed        = 0;
 
 unsigned long lastSensorRead = 0;
 unsigned long lastSensorUpload = 0;
