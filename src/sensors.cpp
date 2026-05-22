@@ -492,6 +492,8 @@ void checkAutoDosing()
           relayDurations[1] = 0;
           relayTimers[1]    = 0;
         }
+        actualDoseElapsed = (unsigned int)((now - autoStateEnteredAt) / 1000UL);
+        lastDoseAborted   = true;
         doseEndTime       = now;
         lastDoseTimestamp = time(nullptr);
         {
@@ -503,9 +505,13 @@ void checkAutoDosing()
         stabiliseSkipCount = 0;
         LOGF("[Auto] Dose aborted: EC %.2f exceeded target+margin (%.2f)\n",
              sensors.ec, ecTarget + DOSE_ABORT_MARGIN);
-        logDeviceActivity("dosing", ("Dose aborted early: EC " +
-                          String(sensors.ec, 2) + " > " +
-                          String(ecTarget + DOSE_ABORT_MARGIN, 2)).c_str());
+        {
+          String wlPart = wlSensorFound ? (", WL " + String((int)sensors.wl) + "mm") : "";
+          logDeviceActivity("dosing", ("Dose aborted: " + String(actualDoseElapsed) + "s"
+                            + " | EC " + String(sensors.ec, 2) + " > " + String(ecTarget + DOSE_ABORT_MARGIN, 2) + " ceiling"
+                            + wlPart
+                            + " (#" + String(dosesToday) + ")").c_str());
+        }
         enterState(AUTO_COOLDOWN);
         break;
       }
@@ -526,22 +532,31 @@ void checkAutoDosing()
           }
         }
         dosesToday++;
+        actualDoseElapsed = activeDoseTime;
+        lastDoseAborted   = false;
 
         LOGF("[Auto] Dose complete. doses_today=%d\n", dosesToday);
         {
+          String wlPart  = wlSensorFound ? (", WL " + String((int)sensors.wl) + "mm") : "";
+          String doseNum = " (#" + String(dosesToday) + ")";
           String doseMsg;
           if (smartDosing && smartCalPhase)
           {
-            doseMsg = "Smart-dose calibration: " + String(activeDoseTime) + "s (dose #" + String(dosesToday) + " today)";
+            doseMsg = "Smart-dose calibration: " + String(activeDoseTime) + "s"
+                    + " | EC " + String(preDoseEC, 2) + " mS/cm"
+                    + wlPart + doseNum;
           }
           else if (smartDosing && smartCalibrated && computedDoseTime > 0)
           {
-            doseMsg = "Smart-dose executed: " + String(activeDoseTime) + "s -> target " +
-                      String(ecTarget, 1) + " mS/cm (dose #" + String(dosesToday) + " today)";
+            doseMsg = "Smart-dose executed: " + String(activeDoseTime) + "s"
+                    + " | EC " + String(preDoseEC, 2) + " -> " + String(ecTarget, 1) + " target"
+                    + wlPart + doseNum;
           }
           else
           {
-            doseMsg = "Auto-dose executed: " + String(activeDoseTime) + "s (dose #" + String(dosesToday) + " today)";
+            doseMsg = "Auto-dose: " + String(activeDoseTime) + "s"
+                    + " | EC " + String(preDoseEC, 2) + " -> " + String(ecTarget, 1) + " target"
+                    + wlPart + doseNum;
           }
           logDeviceActivity("dosing", doseMsg.c_str());
         }
@@ -640,8 +655,10 @@ void checkAutoDosing()
           }
           smartCalPhase = false;
         }
-        else if (smartDosing && smartCalibrated && computedDoseTime > 0)
+        else if (!lastDoseAborted && smartDosing && smartCalibrated && computedDoseTime > 0)
         {
+          // Skip accuracy check on aborted doses — actual dose time < planned time guarantees
+          // false error, which would invalidate good calibration data.
           float predicted = ecRiseRate * (float)computedDoseTime;
           if (predicted > 0.0f)
           {
@@ -655,6 +672,7 @@ void checkAutoDosing()
             }
           }
         }
+        lastDoseAborted = false;
 
         // P8: calibration dose failures are not pump failures — use separate counter above
         if (ecRise < DOSE_RESPONSE_THRESHOLD)
