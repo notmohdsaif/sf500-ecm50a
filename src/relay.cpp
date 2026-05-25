@@ -192,6 +192,24 @@ void handleSerialCommands()
     wifiPrefs.end();
     LOGLN("-----------------\n");
   }
+  else if (cmd == "RAINRESET")
+  {
+    if (!rainSensorFound)
+    {
+      LOGLN("[RAINRESET] Rain sensor not found — skipping");
+    }
+    else
+    {
+      LOGF("[RAINRESET] Writing 0x5A to register 0 on ID %d…\n", rainSensorId);
+      modbus.begin(rainSensorId, Serial1);
+      delay(10);
+      uint8_t result = modbus.writeSingleRegister(RAIN_REG_TIPS, 0x5A);
+      if (result == modbus.ku8MBSuccess)
+        LOGLN("[RAINRESET] Write OK — check next [RAIN] line, should drop to 0");
+      else
+        LOGF("[RAINRESET] Write failed (Modbus code 0x%02X)\n", result);
+    }
+  }
   else if (cmd == "HELP")
   {
     LOGLN("\n--- Commands ---");
@@ -199,6 +217,7 @@ void handleSerialCommands()
     LOGLN("R2ON/R2OFF   - Relay 2 (Mixing)");
     LOGLN("ALLON/ALLOFF - All relays");
     LOGLN("WIFIINFO     - WiFi status");
+    LOGLN("RAINRESET    - Try resetting rain counter (test)");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }

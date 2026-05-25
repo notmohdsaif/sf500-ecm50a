@@ -37,6 +37,14 @@
 #define EC_SCAN_END 5
 #define WL_SCAN_START 13 // Water level scan range (IDs 13–15)
 #define WL_SCAN_END 15
+#define AMB_SCAN_START 20 // Ambient sensor scan range (IDs 20–22)
+#define AMB_SCAN_END 22
+#define AMB_REG_HUMID 500 // Holding register: humidity
+#define AMB_REG_TEMP  501 // Holding register: temperature
+#define AMB_REG_LUX   507 // Holding register: lux
+#define RAIN_SCAN_START 30 // Rain sensor (single fixed ID)
+#define RAIN_SCAN_END 30
+#define RAIN_REG_TIPS 0    // Holding register: rainfall in 0.1mm increments
 
 // Timing Constants (milliseconds)
 #define SENSOR_READ_INTERVAL 1000UL
@@ -75,7 +83,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.1.1"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

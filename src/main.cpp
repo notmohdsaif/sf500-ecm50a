@@ -43,10 +43,15 @@ String topicWifiCmd;
 bool pendingWifiForget = false;
 bool pendingWifiPortal = false;
 
-uint8_t ecSensorId = 0;
-uint8_t wlSensorId = 0;
-bool ecSensorFound = false;
-bool wlSensorFound = false;
+uint8_t ecSensorId   = 0;
+uint8_t wlSensorId   = 0;
+uint8_t ambSensorId  = 0;
+uint8_t rainSensorId = 0;
+int     lastRainResetDay = -1;
+bool ecSensorFound   = false;
+bool wlSensorFound   = false;
+bool ambSensorFound  = false;
+bool rainSensorFound = false;
 SensorData sensors;
 
 bool relayStates[2] = {false, false};
@@ -238,6 +243,7 @@ void setup()
       checkForOTAUpdate();
       initSensors();
       loadSmartCalibration();
+      loadRainResetState();
       uploadSensorConfig();
       fetchDeviceConfig();
 
@@ -283,6 +289,7 @@ void loop()
       checkForOTAUpdate();
       initSensors();
       loadSmartCalibration();
+      loadRainResetState();
       uploadSensorConfig();
       fetchDeviceConfig();
       startupTime = millis();

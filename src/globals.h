@@ -38,10 +38,14 @@ struct NetItem
 
 struct SensorData
 {
-  float ec      = 0.0f;
-  float temp    = 0.0f;
-  float wl      = 0.0f;
-  bool  hasData = false;
+  float ec       = 0.0f;
+  float temp     = 0.0f;
+  float wl       = 0.0f;
+  float ambHumid = 0.0f;
+  float ambTemp  = 0.0f;
+  float ambLux   = 0.0f;
+  float rainfall = 0.0f; // mm (rain bucket: raw register * 0.1)
+  bool  hasData  = false;
 };
 
 struct Schedule
@@ -95,8 +99,13 @@ extern bool pendingWifiPortal;
 // Sensor state
 extern uint8_t    ecSensorId;
 extern uint8_t    wlSensorId;
+extern uint8_t    ambSensorId;
+extern uint8_t    rainSensorId;
+extern int        lastRainResetDay; // local-day-of-month of last rain counter reset; -1 if never
 extern bool       ecSensorFound;
 extern bool       wlSensorFound;
+extern bool       ambSensorFound;
+extern bool       rainSensorFound;
 extern SensorData sensors;
 
 // Relay state

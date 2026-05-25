@@ -78,13 +78,53 @@ void initSensors()
   if (!wlSensorFound)
     LOGF("Water Level: not found (scanned IDs %d–%d)\n", WL_SCAN_START, WL_SCAN_END);
 
-  int found = (int)ecSensorFound + (int)wlSensorFound;
-  LOGF("Found: %d/2 sensors\n", found);
+  // Scan for Ambient sensor (IDs 20–22) — may be direct or via LoRa transparent bridge
+  ambSensorFound = false;
+  for (uint8_t id = AMB_SCAN_START; id <= AMB_SCAN_END; id++)
+  {
+    modbus.begin(id, Serial1);
+    delay(50);
+    if (modbus.readHoldingRegisters(AMB_REG_HUMID, 1) == modbus.ku8MBSuccess)
+    {
+      ambSensorId    = id;
+      ambSensorFound = true;
+      LOGF("Ambient: ID %d\n", id);
+      break;
+    }
+    delay(30);
+  }
+  if (!ambSensorFound)
+    LOGF("Ambient: not found (scanned IDs %d–%d)\n", AMB_SCAN_START, AMB_SCAN_END);
+
+  // Scan for Rain sensor (ID 30) — via LoRa transparent bridge
+  rainSensorFound = false;
+  for (uint8_t id = RAIN_SCAN_START; id <= RAIN_SCAN_END; id++)
+  {
+    modbus.begin(id, Serial1);
+    delay(50);
+    if (modbus.readHoldingRegisters(RAIN_REG_TIPS, 1) == modbus.ku8MBSuccess)
+    {
+      rainSensorId    = id;
+      rainSensorFound = true;
+      LOGF("Rain: ID %d\n", id);
+      break;
+    }
+    delay(30);
+  }
+  if (!rainSensorFound)
+    LOGF("Rain: not found (scanned IDs %d–%d)\n", RAIN_SCAN_START, RAIN_SCAN_END);
+
+  int found = (int)ecSensorFound + (int)wlSensorFound + (int)ambSensorFound + (int)rainSensorFound;
+  LOGF("Found: %d/4 sensors\n", found);
 
   String msg = "Sensor init: ";
-  if (ecSensorFound) msg += "EC(ID=" + String(ecSensorId) + ") ";
-  if (wlSensorFound) msg += "WL(ID=" + String(wlSensorId) + ")";
-  if (!ecSensorFound && !wlSensorFound) msg += "none found";
+  if (ecSensorFound)   msg += "EC(ID="   + String(ecSensorId)   + ") ";
+  if (wlSensorFound)   msg += "WL(ID="   + String(wlSensorId)   + ") ";
+  if (ambSensorFound)  msg += "AMB(ID="  + String(ambSensorId)  + ") ";
+  if (rainSensorFound) msg += "RAIN(ID=" + String(rainSensorId) + ")";
+  msg.trim();
+  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
+    msg += "none found";
   logDeviceActivity("system", msg.c_str());
 }
 
@@ -134,6 +174,47 @@ void saveSmartCalibration()
 }
 
 // =====================================================
+// RAIN — daily counter reset
+// =====================================================
+
+void loadRainResetState()
+{
+  wifiPrefs.begin("rain", true);
+  lastRainResetDay = wifiPrefs.getInt("lastDay", -1);
+  wifiPrefs.end();
+  LOGF("[Rain] Last reset day loaded: %d\n", lastRainResetDay);
+}
+
+void checkRainDailyReset()
+{
+  if (!rainSensorFound) return;
+
+  struct tm ti;
+  if (!getLocalTime(&ti, 0)) return; // time not valid yet
+
+  int today = ti.tm_mday;
+  if (today == lastRainResetDay) return; // already reset today
+
+  // Day changed (or never reset) — write magic value to reset the counter
+  modbus.begin(rainSensorId, Serial1);
+  delay(10);
+  uint8_t result = modbus.writeSingleRegister(RAIN_REG_TIPS, 0x5A);
+  if (result == modbus.ku8MBSuccess)
+  {
+    lastRainResetDay = today;
+    wifiPrefs.begin("rain", false);
+    wifiPrefs.putInt("lastDay", today);
+    wifiPrefs.end();
+    LOGF("[Rain] Daily reset OK (day %d)\n", today);
+    logDeviceActivity("system", "Rain counter reset (daily)");
+  }
+  else
+  {
+    LOGF("[Rain] Daily reset failed (Modbus 0x%02X) — will retry next read\n", result);
+  }
+}
+
+// =====================================================
 // SENSOR READ
 // =====================================================
 
@@ -173,6 +254,52 @@ void readSensors()
       success    = true;
     }
     delay(50);
+  }
+
+  // --- Ambient Sensor (direct or via LoRa transparent bridge) ---
+  if (ambSensorFound)
+  {
+    modbus.begin(ambSensorId, Serial1);
+    delay(10);
+
+    uint16_t rawHumid = 0, rawTemp = 0, rawLux = 0;
+    bool ambOk = false;
+
+    if (modbus.readHoldingRegisters(AMB_REG_HUMID, 2) == modbus.ku8MBSuccess)
+    {
+      rawHumid = modbus.getResponseBuffer(0);
+      rawTemp  = modbus.getResponseBuffer(1);
+      ambOk    = true;
+    }
+    delay(20);
+    if (modbus.readHoldingRegisters(AMB_REG_LUX, 1) == modbus.ku8MBSuccess)
+      rawLux = modbus.getResponseBuffer(0);
+
+    if (ambOk)
+    {
+      sensors.ambHumid = rawHumid / 10.0f;
+      sensors.ambTemp  = rawTemp  / 10.0f;
+      sensors.ambLux   = (float)rawLux;
+      success = true;
+    }
+    delay(50);
+  }
+
+  // --- Rain Sensor (via LoRa transparent bridge) ---
+  if (rainSensorFound)
+  {
+    modbus.begin(rainSensorId, Serial1);
+    delay(10);
+
+    if (modbus.readHoldingRegisters(RAIN_REG_TIPS, 1) == modbus.ku8MBSuccess)
+    {
+      uint16_t rawTips = modbus.getResponseBuffer(0);
+      sensors.rainfall = rawTips / 10.0f; // 0.1mm increments → mm
+      success = true;
+    }
+    delay(50);
+
+    checkRainDailyReset();
   }
 
   if (success)
