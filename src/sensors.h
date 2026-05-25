@@ -13,3 +13,5 @@ void checkAutoDosing();
 void tickStabiliseSkip();
 void loadSmartCalibration();
 void saveSmartCalibration();
+void loadRainResetState();
+void checkRainDailyReset();
