@@ -141,6 +141,22 @@ void uploadSensorConfig()
     s["type"]   = "WL";
     s["status"] = "online";
   }
+  if (ambSensorFound)
+  {
+    String key = "sensor" + String(idx++);
+    JsonObject s = sensorObj.createNestedObject(key);
+    s["ID"]     = String(ambSensorId);
+    s["type"]   = "Ambient";
+    s["status"] = "online";
+  }
+  if (rainSensorFound)
+  {
+    String key = "sensor" + String(idx++);
+    JsonObject s = sensorObj.createNestedObject(key);
+    s["ID"]     = String(rainSensorId);
+    s["type"]   = "Rain";
+    s["status"] = "online";
+  }
 
   String payload;
   serializeJson(doc, payload);
@@ -169,7 +185,7 @@ void uploadSensorReadings()
   HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
-  DynamicJsonDocument doc(512);
+  DynamicJsonDocument doc(768);
   JsonArray arr = doc.to<JsonArray>();
 
   if (ecSensorFound)
@@ -198,6 +214,40 @@ void uploadSensorReadings()
     wl["device"]    = deviceName;
     wl["sensor_id"] = wlId;
     wl["value"]     = sensors.wl;
+  }
+
+  if (ambSensorFound)
+  {
+    char atId[8], ahId[8], alId[8];
+    sprintf(atId, "at_%02d", ambSensorId);
+    sprintf(ahId, "ah_%02d", ambSensorId);
+    sprintf(alId, "al_%02d", ambSensorId);
+
+    JsonObject at = arr.createNestedObject();
+    at["device"]    = deviceName;
+    at["sensor_id"] = atId;
+    at["value"]     = serialized(String(sensors.ambTemp,  1));
+
+    JsonObject ah = arr.createNestedObject();
+    ah["device"]    = deviceName;
+    ah["sensor_id"] = ahId;
+    ah["value"]     = serialized(String(sensors.ambHumid, 1));
+
+    JsonObject al = arr.createNestedObject();
+    al["device"]    = deviceName;
+    al["sensor_id"] = alId;
+    al["value"]     = serialized(String(sensors.ambLux,   0));
+  }
+
+  if (rainSensorFound)
+  {
+    char rnId[8];
+    sprintf(rnId, "rain_%02d", rainSensorId);
+
+    JsonObject rn = arr.createNestedObject();
+    rn["device"]    = deviceName;
+    rn["sensor_id"] = rnId;
+    rn["value"]     = serialized(String(sensors.rainfall, 1));
   }
 
   String payload;
