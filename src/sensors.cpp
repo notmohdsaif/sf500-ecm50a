@@ -308,7 +308,7 @@ void readSensors()
   // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
   if (mqttClient.connected())
   {
-    StaticJsonDocument<768> doc;
+    StaticJsonDocument<896> doc;
 
     if (success)
     {
@@ -319,6 +319,15 @@ void readSensors()
       }
       if (wlSensorFound)
         doc["wl"] = sensors.wl;
+      if (ambSensorFound)
+      {
+        JsonObject ambObj  = doc.createNestedObject("amb");
+        ambObj["temp"]     = serialized(String(sensors.ambTemp,  1));
+        ambObj["humid"]    = serialized(String(sensors.ambHumid, 1));
+        ambObj["lux"]      = serialized(String(sensors.ambLux,   0));
+      }
+      if (rainSensorFound)
+        doc["rain"] = serialized(String(sensors.rainfall, 1));
     }
 
     // Include auto-dosing state when active or in alarm
@@ -368,10 +377,12 @@ void readSensors()
     doc["fw"] = FIRMWARE_VERSION;
 
     JsonObject sensorsObj = doc.createNestedObject("sensors");
-    sensorsObj["ec"] = ecSensorFound;
-    sensorsObj["wl"] = wlSensorFound;
+    sensorsObj["ec"]   = ecSensorFound;
+    sensorsObj["wl"]   = wlSensorFound;
+    sensorsObj["amb"]  = ambSensorFound;
+    sensorsObj["rain"] = rainSensorFound;
 
-    char buf[768];
+    char buf[896];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }
