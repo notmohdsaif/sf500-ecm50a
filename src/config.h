@@ -60,6 +60,8 @@
 #define EC_CEILING_MARGIN 0.30f
 #define DOSE_RESPONSE_THRESHOLD 0.02f
 #define MAX_INEFFECTIVE_DOSES 3
+#define EC_CEILING_HOLD_TIMEOUT (30UL * 60UL * 1000UL) // 30 min sustained ceiling hold → alarm
+#define EC_CEILING_LOG_INTERVAL  (5UL * 60UL * 1000UL) // 5 min minimum between ceiling-hold log entries
 
 // Smart Dosing
 #define SMART_CAL_DURATION 60        // calibration dose length (seconds) — floor only; scales with dosingTime
@@ -83,7 +85,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.1.2"
+#define FIRMWARE_VERSION "1.1.3"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"
