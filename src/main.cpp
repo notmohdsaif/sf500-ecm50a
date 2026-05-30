@@ -88,7 +88,6 @@ int             lastDoseDay              = -1;
 time_t          lastDoseTimestamp        = 0;
 unsigned long   doseEndTime              = 0;
 int             stabiliseSkipCount       = 0;
-unsigned long   autoDosingStartTime      = 0;
 unsigned int    activeDoseTime           = 0;
 unsigned int    minWlDosing              = 0;
 bool            lastDoseAborted          = false;

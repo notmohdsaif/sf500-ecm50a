@@ -339,6 +339,7 @@ void readSensors()
       };
       JsonObject autoObj = doc.createNestedObject("auto");
       autoObj["state"]       = stateNames[autoState];
+      autoObj["target"]      = serialized(String(ecTarget, 2));
       autoObj["samples"]     = ecReadingCount;
       autoObj["avg"]         = serialized(String(ecAverage, 3));
       autoObj["doses_today"] = dosesToday;
@@ -435,6 +436,11 @@ void updateECAverage(float reading)
 // AUTO-DOSING STATE MACHINE
 // =====================================================
 
+// Ceiling-hold tracking — module scope so they can be reset from any SAMPLING sub-path
+static unsigned long ceilingHoldStart    = 0;    // millis() when ceiling hold began (0 = not holding)
+static unsigned long lastCeilingLogMs    = 0;    // millis() of last ceiling-hold log entry
+static float         lastLoggedCeilingEc = -1.0f; // ecAverage at last ceiling-hold log entry
+
 static void enterState(AutoDosingState next)
 {
   autoState          = next;
@@ -495,21 +501,47 @@ void checkAutoDosing()
     // -------------------------------------------------
     case AUTO_SAMPLING:
     {
-      // EC ceiling check — log warning and hold, do not dose; ec_high alarm fires on dashboard
+      // EC ceiling check — hold dosing; escalate to ALARM after sustained hold
       if (ecReadingCount >= EC_SAMPLES && ecAverage > ecTarget + EC_CEILING_MARGIN)
       {
-        static float lastLoggedCeilingEc = -1.0f;
-        if (fabsf(ecAverage - lastLoggedCeilingEc) > 0.05f)
+        if (ceilingHoldStart == 0)
+          ceilingHoldStart = millis();
+
+        // Time-based log throttle: only log when EC changes AND enough time has passed
+        unsigned long nowMs = millis();
+        if (fabsf(ecAverage - lastLoggedCeilingEc) > 0.05f &&
+            nowMs - lastCeilingLogMs >= EC_CEILING_LOG_INTERVAL)
         {
-          LOGF("[Auto] EC above ceiling (%.2f > %.2f) — holding, no dose\n",
-               ecAverage, ecTarget + EC_CEILING_MARGIN);
+          LOGF("[Auto] EC above ceiling (%.2f > %.2f) — holding (%lu s)\n",
+               ecAverage, ecTarget + EC_CEILING_MARGIN,
+               (nowMs - ceilingHoldStart) / 1000UL);
           logDeviceActivity("dosing", ("Auto-dosing holding: EC above ceiling (" +
                             String(ecAverage, 2) + " > " +
                             String(ecTarget + EC_CEILING_MARGIN, 2) + ")").c_str());
           lastLoggedCeilingEc = ecAverage;
+          lastCeilingLogMs    = nowMs;
         }
+
+        // Escalate to ALARM if EC has been above ceiling continuously for too long
+        if (nowMs - ceilingHoldStart >= EC_CEILING_HOLD_TIMEOUT)
+        {
+          triggerAlarm("EC above ceiling for " +
+                       String(EC_CEILING_HOLD_TIMEOUT / 60000UL) + "+ min (" +
+                       String(ecAverage, 2) + " > " +
+                       String(ecTarget + EC_CEILING_MARGIN, 2) + ")");
+          ceilingHoldStart    = 0;
+          lastCeilingLogMs    = 0;
+          lastLoggedCeilingEc = -1.0f;
+          return;
+        }
+
         return;
       }
+
+      // EC is back within ceiling — reset hold timer so next episode starts fresh
+      ceilingHoldStart    = 0;
+      lastCeilingLogMs    = 0;
+      lastLoggedCeilingEc = -1.0f;
 
       // Wait for full sample window
       if (ecReadingCount < EC_SAMPLES)

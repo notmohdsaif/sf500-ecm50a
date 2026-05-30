@@ -159,7 +159,6 @@ extern int             lastDoseDay;
 extern time_t          lastDoseTimestamp;
 extern unsigned long   doseEndTime;
 extern int             stabiliseSkipCount;
-extern unsigned long   autoDosingStartTime;
 extern unsigned int    activeDoseTime;     // actual duration used this cycle (smart or fixed)
 extern unsigned int    minWlDosing;        // min water level mm before dosing fires (0=disabled)
 extern bool            lastDoseAborted;    // true if last dose ended via P0 early abort

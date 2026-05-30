@@ -5,6 +5,7 @@
 
 #include "cloud.h"
 #include "logger.h"
+#include "relay.h"
 #include <HTTPClient.h>
 
 // =====================================================
@@ -330,9 +331,18 @@ void fetchDeviceConfig()
     if (newVal != autoDosing)
     {
       autoDosing = newVal;
-      autoDosingStartTime = autoDosing ? millis() : 0;
       autoState = AUTO_IDLE; // state machine resets on any toggle
       LOGLN(autoDosing ? "\n[CONFIG] Auto-Dosing ON" : "\n[CONFIG] Auto-Dosing OFF");
+
+      if (!autoDosing)
+      {
+        // Force relays OFF if auto-dosing was disabled mid-cycle.
+        // PRE_MIX and POST_MIX run R2 without a relay timer, so checkRelayTimers() alone
+        // won't turn it off — we must clear it here explicitly.
+        if (relayStates[0]) { writeRelay(1, false); relayDurations[0] = relayTimers[0] = 0; }
+        if (relayStates[1]) { writeRelay(2, false); relayDurations[1] = relayTimers[1] = 0; }
+      }
+
       changed = true;
     }
   }
