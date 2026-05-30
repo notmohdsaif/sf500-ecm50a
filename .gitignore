@@ -6,3 +6,6 @@
 
 # Local secrets (do not commit)
 src/config_secrets.h
+
+# Claude Code project settings
+.claude

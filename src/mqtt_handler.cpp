@@ -4,6 +4,7 @@
 // =====================================================
 
 #include "mqtt_handler.h"
+#include "logger.h"
 #include "relay.h"    // writeRelay()
 
 // =====================================================
@@ -34,7 +35,7 @@ void reconnectMQTT()
         mqttClient.publish(mqttTopicData.c_str(), buf);
       }
 
-      Serial.println("MQTT connected");
+      LOGLN("MQTT connected");
       return;
     }
     delay(2000);
@@ -62,12 +63,12 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       String cmd = doc["cmd"].as<String>();
       if (cmd == "forget")
       {
-        Serial.println("[WiFi] Forget command received");
+        LOGLN("[WiFi] Forget command received");
         pendingWifiForget = true;
       }
       else if (cmd == "portal")
       {
-        Serial.println("[WiFi] Portal command received");
+        LOGLN("[WiFi] Portal command received");
         pendingWifiPortal = true;
       }
     }
@@ -80,7 +81,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   // Startup protection: ignore commands for first 5 seconds
   if (!startupComplete && (millis() - startupTime < 5000))
   {
-    Serial.println("Ignoring MQTT during startup");
+    LOGLN("Ignoring MQTT during startup");
     return;
   }
   startupComplete = true;
@@ -110,7 +111,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       relayDurations[i] = duration;
       relayTimers[i]    = millis();
       writeRelay(i + 1, true);
-      Serial.println("R" + String(i + 1) + " timed for " + String(duration) + "s");
+      LOGF("R%d timed for %ds\n", i + 1, duration);
     }
     else
     {
@@ -130,29 +131,40 @@ void publishRelayStatus()
   if (!mqttClient.connected())
     return;
 
-  StaticJsonDocument<128> doc;
+  StaticJsonDocument<256> doc;
   doc["r1"] = relayStates[0] ? 1 : 0;
   doc["r2"] = relayStates[1] ? 1 : 0;
 
-  // Include end-time for any active timed relay
   unsigned long now = millis();
   unsigned long maxRemaining = 0;
+  const char* etKeys[] = { "et1", "et2" };
 
   for (int i = 0; i < 2; i++)
   {
     if (relayDurations[i] > 0 && relayTimers[i] > 0)
     {
-      unsigned long elapsed = now - relayTimers[i];
-      unsigned long total   = relayDurations[i] * 1000UL;
+      unsigned long elapsed   = now - relayTimers[i];
+      unsigned long total     = relayDurations[i] * 1000UL;
       if (elapsed < total)
       {
         unsigned long remaining = total - elapsed;
         if (remaining > maxRemaining)
           maxRemaining = remaining;
+
+        // Per-relay end time
+        time_t endTime = time(nullptr) + (time_t)(remaining / 1000);
+        struct tm ti;
+        localtime_r(&endTime, &ti);
+        char ts[30];
+        sprintf(ts, "%04d-%02d-%02dT%02d:%02d:%02d+08:00",
+                ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+                ti.tm_hour, ti.tm_min, ti.tm_sec);
+        doc[etKeys[i]] = ts;
       }
     }
   }
 
+  // Keep legacy "et" (max remaining) for backward compat
   if (maxRemaining > 0)
   {
     time_t endTime = time(nullptr) + (time_t)(maxRemaining / 1000);
@@ -165,7 +177,7 @@ void publishRelayStatus()
     doc["et"] = ts;
   }
 
-  char buf[128];
+  char buf[256];
   serializeJson(doc, buf);
   mqttClient.publish(topicRelayStatus.c_str(), buf);
 }
