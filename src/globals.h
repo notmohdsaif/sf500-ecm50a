@@ -38,10 +38,14 @@ struct NetItem
 
 struct SensorData
 {
-  float ec      = 0.0f;
-  float temp    = 0.0f;
-  float wl      = 0.0f;
-  bool  hasData = false;
+  float ec       = 0.0f;
+  float temp     = 0.0f;
+  float wl       = 0.0f;
+  float ambHumid = 0.0f;
+  float ambTemp  = 0.0f;
+  float ambLux   = 0.0f;
+  float rainfall = 0.0f; // mm (rain bucket: raw register * 0.1)
+  bool  hasData  = false;
 };
 
 struct Schedule
@@ -74,6 +78,7 @@ extern WiFiState            wifiState;
 extern std::vector<NetItem> scanList;
 extern bool                 portalMode;
 extern unsigned long        portalConnectStartMs;
+extern unsigned long        portalStartedAt;
 
 // Device identity
 extern String deviceMAC;
@@ -94,8 +99,13 @@ extern bool pendingWifiPortal;
 // Sensor state
 extern uint8_t    ecSensorId;
 extern uint8_t    wlSensorId;
+extern uint8_t    ambSensorId;
+extern uint8_t    rainSensorId;
+extern int        lastRainResetDay; // local-day-of-month of last rain counter reset; -1 if never
 extern bool       ecSensorFound;
 extern bool       wlSensorFound;
+extern bool       ambSensorFound;
+extern bool       rainSensorFound;
 extern SensorData sensors;
 
 // Relay state
@@ -109,6 +119,18 @@ extern bool          autoMixing;
 extern float         ecTarget;
 extern float         ecMinusHys;
 extern unsigned int  dosingTime;
+
+// Smart Dosing
+extern bool          smartDosing;
+extern bool          smartCalibrated;
+extern bool          smartCalPhase;
+extern float         ecRiseRate;
+extern float         wlDropRate;
+extern float         wlBeforeCal;
+extern float         wlAtCal;           // WL at calibration time — persisted to NVS for WL correction
+extern unsigned int  computedDoseTime;
+extern unsigned int  actualCalDuration; // actual calibration dose length used (≥ SMART_CAL_DURATION)
+extern int           calRetryCount;     // consecutive calibration failures (separate from production doses)
 
 // EC automation — rolling average
 extern float         ecReadings[EC_SAMPLES];
@@ -133,10 +155,14 @@ extern unsigned long   autoStateEnteredAt;
 extern float           preDoseEC;
 extern int             consecutiveIneffectiveDoses;
 extern int             dosesToday;
+extern int             lastDoseDay;
 extern time_t          lastDoseTimestamp;
 extern unsigned long   doseEndTime;
 extern int             stabiliseSkipCount;
-extern unsigned long   autoDosingStartTime;
+extern unsigned int    activeDoseTime;     // actual duration used this cycle (smart or fixed)
+extern unsigned int    minWlDosing;        // min water level mm before dosing fires (0=disabled)
+extern bool            lastDoseAborted;    // true if last dose ended via P0 early abort
+extern unsigned int    actualDoseElapsed;  // seconds the relay actually ran (< activeDoseTime on abort)
 
 // Timing state
 extern unsigned long lastSensorRead;
@@ -156,3 +182,8 @@ extern unsigned long lastTriggeredTime[MAX_SCHEDULES];
 extern unsigned long startupTime;
 extern bool          startupComplete;
 
+// Remote serial logging
+#ifdef ENABLE_OTA_LOGS
+extern String         topicLogs;
+extern unsigned long  lastLogPublish;
+#endif

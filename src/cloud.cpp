@@ -4,6 +4,8 @@
 // =====================================================
 
 #include "cloud.h"
+#include "logger.h"
+#include "relay.h"
 #include <HTTPClient.h>
 
 // =====================================================
@@ -17,7 +19,7 @@ void syncTimeWithNTP()
     "time.cloudflare.com", "time.windows.com"
   };
 
-  Serial.print("Syncing NTP");
+  LOGLN("Syncing NTP...");
 
   for (int s = 0; s < 4; s++)
   {
@@ -30,18 +32,16 @@ void syncTimeWithNTP()
       {
         struct tm ti;
         localtime_r(&now, &ti);
-        Serial.println(" OK");
-        Serial.printf("Time: %04d-%02d-%02d %02d:%02d:%02d\n",
-                      ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
-                      ti.tm_hour, ti.tm_min, ti.tm_sec);
+        LOGF("NTP OK: %04d-%02d-%02d %02d:%02d:%02d\n",
+             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+             ti.tm_hour, ti.tm_min, ti.tm_sec);
         return;
       }
       delay(500);
-      Serial.print(".");
     }
   }
 
-  Serial.println(" FAILED");
+  LOGLN("NTP FAILED");
 }
 
 // =====================================================
@@ -61,12 +61,12 @@ void registerDevice()
   http.setTimeout(15000);
 
   int code = http.GET();
-  Serial.println("[REG] HTTP code: " + String(code));
+  LOGF("[REG] HTTP code: %d\n", code);
 
   if (code == 200)
   {
     String response = http.getString();
-    Serial.println("[REG] Response: " + response.substring(0, 80));
+    LOGLNS("[REG] Response: " + response.substring(0, 80));
 
     if (response == "[]" || response.length() < 5)
     {
@@ -103,7 +103,7 @@ void registerDevice()
 
   http.end();
   if (isRegistered)
-    Serial.println("Device registered");
+    LOGLN("Device registered");
 }
 
 // =====================================================
@@ -142,6 +142,22 @@ void uploadSensorConfig()
     s["type"]   = "WL";
     s["status"] = "online";
   }
+  if (ambSensorFound)
+  {
+    String key = "sensor" + String(idx++);
+    JsonObject s = sensorObj.createNestedObject(key);
+    s["ID"]     = String(ambSensorId);
+    s["type"]   = "Ambient";
+    s["status"] = "online";
+  }
+  if (rainSensorFound)
+  {
+    String key = "sensor" + String(idx++);
+    JsonObject s = sensorObj.createNestedObject(key);
+    s["ID"]     = String(rainSensorId);
+    s["type"]   = "Rain";
+    s["status"] = "online";
+  }
 
   String payload;
   serializeJson(doc, payload);
@@ -155,7 +171,7 @@ void uploadSensorConfig()
   int code = http.PATCH(payload);
   http.end();
 
-  Serial.println(code == 200 || code == 204 ? "Sensor config uploaded" : "Config upload failed");
+  LOGLN(code == 200 || code == 204 ? "Sensor config uploaded" : "Config upload failed");
 }
 
 // =====================================================
@@ -170,7 +186,7 @@ void uploadSensorReadings()
   HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
-  DynamicJsonDocument doc(512);
+  DynamicJsonDocument doc(768);
   JsonArray arr = doc.to<JsonArray>();
 
   if (ecSensorFound)
@@ -201,6 +217,40 @@ void uploadSensorReadings()
     wl["value"]     = sensors.wl;
   }
 
+  if (ambSensorFound)
+  {
+    char atId[8], ahId[8], alId[8];
+    sprintf(atId, "at_%02d", ambSensorId);
+    sprintf(ahId, "ah_%02d", ambSensorId);
+    sprintf(alId, "al_%02d", ambSensorId);
+
+    JsonObject at = arr.createNestedObject();
+    at["device"]    = deviceName;
+    at["sensor_id"] = atId;
+    at["value"]     = serialized(String(sensors.ambTemp,  1));
+
+    JsonObject ah = arr.createNestedObject();
+    ah["device"]    = deviceName;
+    ah["sensor_id"] = ahId;
+    ah["value"]     = serialized(String(sensors.ambHumid, 1));
+
+    JsonObject al = arr.createNestedObject();
+    al["device"]    = deviceName;
+    al["sensor_id"] = alId;
+    al["value"]     = serialized(String(sensors.ambLux,   0));
+  }
+
+  if (rainSensorFound)
+  {
+    char rnId[8];
+    sprintf(rnId, "rain_%02d", rainSensorId);
+
+    JsonObject rn = arr.createNestedObject();
+    rn["device"]    = deviceName;
+    rn["sensor_id"] = rnId;
+    rn["value"]     = serialized(String(sensors.rainfall, 1));
+  }
+
   String payload;
   serializeJson(arr, payload);
 
@@ -213,7 +263,7 @@ void uploadSensorReadings()
 
     int code = http.POST(payload);
     if (code == 200 || code == 201)
-      Serial.println("Uploaded " + String(arr.size()) + " readings");
+      LOGF("Uploaded %u readings\n", (unsigned)arr.size());
     http.end();
   }
 }
@@ -253,7 +303,7 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing";
 
   if (!http.begin(secureClient, url))
     return;
@@ -268,7 +318,7 @@ void fetchDeviceConfig()
   String response = http.getString();
   http.end();
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<384> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
   if (doc.size() == 0) return;
 
@@ -281,9 +331,18 @@ void fetchDeviceConfig()
     if (newVal != autoDosing)
     {
       autoDosing = newVal;
-      autoDosingStartTime = autoDosing ? millis() : 0;
       autoState = AUTO_IDLE; // state machine resets on any toggle
-      Serial.println(autoDosing ? "\n[CONFIG] Auto-Dosing ON" : "\n[CONFIG] Auto-Dosing OFF");
+      LOGLN(autoDosing ? "\n[CONFIG] Auto-Dosing ON" : "\n[CONFIG] Auto-Dosing OFF");
+
+      if (!autoDosing)
+      {
+        // Force relays OFF if auto-dosing was disabled mid-cycle.
+        // PRE_MIX and POST_MIX run R2 without a relay timer, so checkRelayTimers() alone
+        // won't turn it off — we must clear it here explicitly.
+        if (relayStates[0]) { writeRelay(1, false); relayDurations[0] = relayTimers[0] = 0; }
+        if (relayStates[1]) { writeRelay(2, false); relayDurations[1] = relayTimers[1] = 0; }
+      }
+
       changed = true;
     }
   }
@@ -294,7 +353,7 @@ void fetchDeviceConfig()
     if (newVal != autoMixing)
     {
       autoMixing = newVal;
-      Serial.println(autoMixing ? "[CONFIG] Mixing Pump: ENABLED" : "[CONFIG] Mixing Pump: DISABLED");
+      LOGLN(autoMixing ? "[CONFIG] Mixing Pump: ENABLED" : "[CONFIG] Mixing Pump: DISABLED");
       changed = true;
     }
   }
@@ -302,17 +361,16 @@ void fetchDeviceConfig()
   if (!dev["ec_target"].isNull())
   {
     float newVal = dev["ec_target"];
+    ecMinusHys = newVal - EC_HYSTERESIS;
     if (abs(newVal - ecTarget) > 0.01f)
     {
-      ecTarget   = newVal;
-      ecMinusHys = ecTarget - EC_HYSTERESIS;
+      ecTarget = newVal;
 
       ecReadingCount = 0;
       ecReadingIndex = 0;
       autoState = AUTO_IDLE; // reset state machine when target changes
 
-      Serial.println("\n[CONFIG] EC Target: " + String(ecTarget, 2) +
-                     " (dose below " + String(ecMinusHys, 2) + ")");
+      LOGF("\n[CONFIG] EC Target: %.2f (dose below %.2f)\n", ecTarget, ecMinusHys);
       changed = true;
     }
   }
@@ -323,13 +381,37 @@ void fetchDeviceConfig()
     if (newVal > 0 && newVal != dosingTime)
     {
       dosingTime = newVal;
-      Serial.println("[CONFIG] Dosing Time: " + String(dosingTime) + "s");
+      LOGF("[CONFIG] Dosing Time: %ds\n", dosingTime);
       changed = true;
     }
   }
 
+  if (!dev["smart_dosing"].isNull())
+  {
+    bool newVal = dev["smart_dosing"];
+    if (newVal != smartDosing)
+    {
+      smartDosing = newVal;
+      LOGLN(smartDosing ? "[CONFIG] Smart Dosing ON" : "[CONFIG] Smart Dosing OFF");
+      changed = true;
+    }
+  }
+
+  if (!dev["min_wl_dosing"].isNull())
+  {
+    unsigned int newVal = dev["min_wl_dosing"].as<unsigned int>();
+    if (newVal != minWlDosing)
+    {
+      minWlDosing = newVal;
+      if (minWlDosing > 0)
+        LOGF("[CONFIG] Min WL for dosing: %dmm\n", minWlDosing);
+      else
+        LOGLN("[CONFIG] Min WL for dosing: disabled");
+    }
+  }
+
   if (changed && autoDosing)
-    Serial.println("[INFO] Dose when EC < " + String(ecMinusHys, 2) + "\n");
+    LOGF("[INFO] Dose when EC < %.2f\n", ecMinusHys);
 }
 
 // =====================================================
@@ -395,10 +477,10 @@ void fetchSchedules()
     scheduleCount++;
   }
 
-  Serial.println("\n[SCHEDULE] " + String(scheduleCount) + " active");
+  LOGF("\n[SCHEDULE] %d active\n", scheduleCount);
   for (int i = 0; i < scheduleCount; i++)
   {
-    Serial.printf("  [%lu] %s: R%d @ %02d:%02d for %ds\n",
+    LOGF("  [%lu] %s: R%d @ %02d:%02d for %ds\n",
                   (unsigned long)schedules[i].id,
                   schedules[i].name.c_str(),
                   schedules[i].relayNum,

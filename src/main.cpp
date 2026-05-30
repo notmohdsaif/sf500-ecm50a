@@ -4,6 +4,7 @@
 // =====================================================
 
 #include "globals.h"
+#include "logger.h"
 #include "wifi_portal.h"
 #include "cloud.h"
 #include "mqtt_handler.h"
@@ -28,6 +29,7 @@ WiFiState wifiState = STATE_PORTAL;
 std::vector<NetItem> scanList;
 bool portalMode = false;
 unsigned long portalConnectStartMs = 0;
+unsigned long portalStartedAt      = 0;
 
 String deviceMAC;
 String deviceName;
@@ -41,10 +43,15 @@ String topicWifiCmd;
 bool pendingWifiForget = false;
 bool pendingWifiPortal = false;
 
-uint8_t ecSensorId = 0;
-uint8_t wlSensorId = 0;
-bool ecSensorFound = false;
-bool wlSensorFound = false;
+uint8_t ecSensorId   = 0;
+uint8_t wlSensorId   = 0;
+uint8_t ambSensorId  = 0;
+uint8_t rainSensorId = 0;
+int     lastRainResetDay = -1;
+bool ecSensorFound   = false;
+bool wlSensorFound   = false;
+bool ambSensorFound  = false;
+bool rainSensorFound = false;
 SensorData sensors;
 
 bool relayStates[2] = {false, false};
@@ -54,8 +61,19 @@ unsigned int relayDurations[2] = {0, 0};
 bool autoDosing = false;
 bool autoMixing = false;
 float ecTarget = 1.5f;
-float ecMinusHys = 0.0f;
+float ecMinusHys = ecTarget - EC_HYSTERESIS;
 unsigned int dosingTime = 30;
+
+bool         smartDosing       = false;
+bool         smartCalibrated   = false;
+bool         smartCalPhase     = false;
+float        ecRiseRate        = 0.0f;
+float        wlDropRate        = 0.0f;
+float        wlBeforeCal       = 0.0f;
+float        wlAtCal           = 0.0f;
+unsigned int computedDoseTime  = 0;
+unsigned int actualCalDuration = 0;
+int          calRetryCount     = 0;
 float ecReadings[EC_SAMPLES];
 int ecReadingIndex = 0;
 int ecReadingCount = 0;
@@ -66,10 +84,14 @@ unsigned long   autoStateEnteredAt       = 0;
 float           preDoseEC                = 0.0f;
 int             consecutiveIneffectiveDoses = 0;
 int             dosesToday               = 0;
+int             lastDoseDay              = -1;
 time_t          lastDoseTimestamp        = 0;
 unsigned long   doseEndTime              = 0;
 int             stabiliseSkipCount       = 0;
-unsigned long   autoDosingStartTime      = 0;
+unsigned int    activeDoseTime           = 0;
+unsigned int    minWlDosing              = 0;
+bool            lastDoseAborted          = false;
+unsigned int    actualDoseElapsed        = 0;
 
 unsigned long lastSensorRead = 0;
 unsigned long lastSensorUpload = 0;
@@ -86,22 +108,41 @@ unsigned long lastTriggeredTime[MAX_SCHEDULES] = {0};
 unsigned long startupTime = 0;
 bool startupComplete = false;
 
+#ifdef ENABLE_OTA_LOGS
+String        topicLogs;
+unsigned long lastLogPublish = 0;
+#endif
+
 // =====================================================
 // SETUP
 // =====================================================
+
+static const char* resetReasonStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_SW:        return "SW_RESTART";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WATCHDOG";
+    case ESP_RST_TASK_WDT:  return "TASK_WATCHDOG";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_DEEPSLEEP: return "DEEP_SLEEP";
+    default:                return "OTHER";
+  }
+}
 
 void setup()
 {
   Serial.begin(9600);
   delay(2000);
-  Serial.println("\n\n=== ESP32-S3 ECM50-A SF500 System v2.1 ===\n");
+  LOGLN("\n\n=== ESP32-S3 ECM50-A SF500 System v2.1 ===\n");
+  LOGF("[DIAG] Reset: %s | Heap: %d bytes\n", resetReasonStr(esp_reset_reason()), ESP.getFreeHeap());
 
   // --- Relays ---
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
   digitalWrite(RELAY1_PIN, LOW);
   digitalWrite(RELAY2_PIN, LOW);
-  Serial.println("Relays initialized (OFF)");
+  LOGLN("Relays initialized (OFF)");
 
   // --- RS485 ---
   Serial1.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
@@ -132,11 +173,15 @@ void setup()
   topicRelayUpdate = "sf500/" + lastSix + "/relay_update";
   topicRelayStatus = "sf500/" + lastSix + "/relay_status";
   topicWifiCmd     = "sf500/" + lastSix + "/wifi_cmd";
+#ifdef ENABLE_OTA_LOGS
+  topicLogs        = "sf500/" + lastSix + "/logs";
+#endif
 
+  mqttClient.setBufferSize(4096);
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
 
-  Serial.println("Device: " + deviceName + " (" + deviceMAC + ")\n");
+  LOGLNS("Device: " + deviceName + " (" + deviceMAC + ")\n");
 
   // --- Auto-connect with saved credentials ---
   WiFi.persistent(false);
@@ -146,12 +191,12 @@ void setup()
   String savedPass = wifiPrefs.getString("pass", "");
   wifiPrefs.end();
 
-  Serial.printf("[WiFi] Saved SSID: '%s'\n",
-                savedSSID.length() > 0 ? savedSSID.c_str() : "(empty)");
+  LOGF("[WiFi] Saved SSID: '%s'\n",
+       savedSSID.length() > 0 ? savedSSID.c_str() : "(empty)");
 
   if (savedSSID.length() > 0)
   {
-    Serial.printf("[WiFi] Auto-connecting to '%s'...\n", savedSSID.c_str());
+    LOGF("[WiFi] Auto-connecting to '%s'...\n", savedSSID.c_str());
     WiFi.mode(WIFI_STA);
     WiFi.begin(savedSSID.c_str(), savedPass.c_str());
 
@@ -159,7 +204,6 @@ void setup()
     while (WiFi.status() != WL_CONNECTED && millis() - start < AUTO_CONNECT_TIMEOUT_MS)
     {
       delay(200);
-      Serial.print(".");
       checkRelayTimers();
       handleSerialCommands();
     }
@@ -168,17 +212,17 @@ void setup()
     {
       wifiState = STATE_ONLINE;
       portalMode = false;
-      Serial.printf("\n[WiFi] Connected, IP=%s\n", WiFi.localIP().toString().c_str());
+      LOGF("\n[WiFi] Connected, IP=%s RSSI=%ddBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     }
     else
     {
-      Serial.println("\n[WiFi] Auto-connect failed, starting portal");
+      LOGLN("\n[WiFi] Auto-connect failed, starting portal");
       startWiFiPortal();
     }
   }
   else
   {
-    Serial.println("[WiFi] No saved credentials, starting portal");
+    LOGLN("[WiFi] No saved credentials, starting portal");
     startWiFiPortal();
   }
 
@@ -197,10 +241,12 @@ void setup()
       logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
       checkForOTAUpdate();
       initSensors();
+      loadSmartCalibration();
+      loadRainResetState();
       uploadSensorConfig();
       fetchDeviceConfig();
 
-      Serial.println("Commands: R1ON/OFF, R2ON/OFF, ALLON/OFF, WIFIINFO, HELP\n");
+      LOGLN("Commands: R1ON/OFF, R2ON/OFF, ALLON/OFF, WIFIINFO, HELP\n");
       startupTime = millis();
     }
   }
@@ -228,7 +274,7 @@ void loop()
   // One-time initialization after portal completes (wifiState==STATE_ONLINE, not yet registered)
   if (wifiState == STATE_ONLINE && !isRegistered && startupTime == 0)
   {
-    Serial.println("[WiFi] Portal complete, initializing...");
+    LOGLN("[WiFi] Portal complete, initializing...");
     secureClient.setInsecure();
     delay(500);
 
@@ -241,6 +287,8 @@ void loop()
       logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
       checkForOTAUpdate();
       initSensors();
+      loadSmartCalibration();
+      loadRainResetState();
       uploadSensorConfig();
       fetchDeviceConfig();
       startupTime = millis();
@@ -250,33 +298,47 @@ void loop()
   // --- WiFi reconnect if dropped ---
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("[WiFi] Connection lost, reconnecting...");
+    LOGLN("[WiFi] Connection lost, reconnecting...");
 
     wifiPrefs.begin("wifi", true);
     String savedSSID = wifiPrefs.getString("ssid", "");
     String savedPass = wifiPrefs.getString("pass", "");
     wifiPrefs.end();
 
+    bool reconnected = false;
     if (savedSSID.length() > 0)
     {
-      WiFi.begin(savedSSID.c_str(), savedPass.c_str());
-
-      unsigned long start = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
+      for (int attempt = 1; attempt <= 3; attempt++)
       {
-        delay(200);
-        checkRelayTimers();
-        handleSerialCommands();
+        LOGF("[WiFi] Reconnect attempt %d/3...\n", attempt);
+        WiFi.disconnect(false);
+        WiFi.begin(savedSSID.c_str(), savedPass.c_str());
+
+        unsigned long start = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
+        {
+          delay(200);
+          checkRelayTimers();
+          handleSerialCommands();
+        }
+
+        if (WiFi.status() == WL_CONNECTED)
+        {
+          reconnected = true;
+          break;
+        }
+        LOGF("[WiFi] Attempt %d failed\n", attempt);
       }
     }
 
-    if (WiFi.status() != WL_CONNECTED)
+    if (!reconnected)
     {
+      LOGLN("[WiFi] All attempts failed, opening hotspot...");
       startWiFiPortal();
       return;
     }
 
-    Serial.println("[WiFi] Reconnected: " + WiFi.localIP().toString());
+    LOGLNS("[WiFi] Reconnected: " + WiFi.localIP().toString());
   }
 
   if (!isRegistered)
@@ -292,14 +354,14 @@ void loop()
     wifiPrefs.begin("wifi", false);
     wifiPrefs.clear();
     wifiPrefs.end();
-    Serial.println("[WiFi] Credentials forgotten, restarting...");
+    LOGLN("[WiFi] Credentials forgotten, restarting...");
     delay(500);
     ESP.restart();
   }
   if (pendingWifiPortal)
   {
     pendingWifiPortal = false;
-    Serial.println("[WiFi] Starting portal on remote command...");
+    LOGLN("[WiFi] Starting portal on remote command...");
     startWiFiPortal();
   }
 
@@ -353,6 +415,14 @@ void loop()
     checkForOTAUpdate();
     lastOTACheck = now;
   }
+
+#ifdef ENABLE_OTA_LOGS
+  if (now - lastLogPublish >= LOG_PUBLISH_INTERVAL)
+  {
+    publishPendingLogs();
+    lastLogPublish = now;
+  }
+#endif
 
   delay(10);
 }

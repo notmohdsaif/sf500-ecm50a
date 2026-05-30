@@ -11,3 +11,7 @@ void readSensors();
 void updateECAverage(float reading);
 void checkAutoDosing();
 void tickStabiliseSkip();
+void loadSmartCalibration();
+void saveSmartCalibration();
+void loadRainResetState();
+void checkRainDailyReset();

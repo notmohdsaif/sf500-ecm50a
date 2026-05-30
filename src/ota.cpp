@@ -8,6 +8,7 @@
 #include <HTTPUpdate.h>
 #include <esp_ota_ops.h>
 #include "cloud.h"
+#include "logger.h"
 
 // =====================================================
 // MARK APP VALID
@@ -20,7 +21,7 @@
 void markAppValid()
 {
   esp_ota_mark_app_valid_cancel_rollback();
-  Serial.println("[OTA] App marked valid");
+  LOGLN("[OTA] App marked valid");
 }
 
 // =====================================================
@@ -34,7 +35,7 @@ void checkForOTAUpdate()
 {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  Serial.println("\n[OTA] Checking — current: v" FIRMWARE_VERSION);
+  LOGLN("[OTA] Checking — current: v" FIRMWARE_VERSION);
 
   // --- Step 1: Query GitHub releases/latest ---
   WiFiClientSecure apiClient;
@@ -46,7 +47,7 @@ void checkForOTAUpdate()
 
   if (!http.begin(apiClient, apiUrl))
   {
-    Serial.println("[OTA] Cannot connect to GitHub API");
+    LOGLN("[OTA] Cannot connect to GitHub API");
     return;
   }
 
@@ -57,7 +58,7 @@ void checkForOTAUpdate()
   int code = http.GET();
   if (code != 200)
   {
-    Serial.printf("[OTA] GitHub API returned %d\n", code);
+    LOGF("[OTA] GitHub API returned %d\n", code);
     http.end();
     return;
   }
@@ -69,18 +70,18 @@ void checkForOTAUpdate()
 
   if (err)
   {
-    Serial.println("[OTA] JSON error: " + String(err.c_str()));
+    LOGF("[OTA] JSON error: %s\n", err.c_str());
     return;
   }
 
   String latestTag = doc["tag_name"].as<String>();
   if (latestTag.startsWith("v")) latestTag = latestTag.substring(1);
 
-  Serial.println("[OTA] Latest: v" + latestTag);
+  LOGLNS("[OTA] Latest: v" + latestTag);
 
   if (latestTag == FIRMWARE_VERSION)
   {
-    Serial.println("[OTA] Up to date");
+    LOGLN("[OTA] Up to date");
     return;
   }
 
@@ -97,11 +98,11 @@ void checkForOTAUpdate()
 
   if (downloadUrl.isEmpty())
   {
-    Serial.println("[OTA] No .bin asset in release v" + latestTag);
+    LOGLNS("[OTA] No .bin asset in release v" + latestTag);
     return;
   }
 
-  Serial.println("[OTA] Updating to v" + latestTag);
+  LOGLNS("[OTA] Updating to v" + latestTag);
 
   String logMsg = "OTA update: v" FIRMWARE_VERSION " -> v" + latestTag;
   logDeviceActivity("system", logMsg.c_str());
@@ -119,16 +120,15 @@ void checkForOTAUpdate()
   switch (result)
   {
     case HTTP_UPDATE_OK:
-      // rebootOnUpdate=true means device reboots here automatically
-      Serial.println("[OTA] Success — rebooting");
+      LOGLN("[OTA] Success — rebooting");
       break;
     case HTTP_UPDATE_FAILED:
-      Serial.printf("[OTA] Failed (%d): %s\n",
-                    httpUpdate.getLastError(),
-                    httpUpdate.getLastErrorString().c_str());
+      LOGF("[OTA] Failed (%d): %s\n",
+           httpUpdate.getLastError(),
+           httpUpdate.getLastErrorString().c_str());
       break;
     case HTTP_UPDATE_NO_UPDATES:
-      Serial.println("[OTA] Server reports no update");
+      LOGLN("[OTA] Server reports no update");
       break;
   }
 }
