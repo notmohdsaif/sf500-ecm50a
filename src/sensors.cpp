@@ -483,6 +483,11 @@ void checkAutoDosing()
       consecutiveIneffectiveDoses = 0;
       stabiliseSkipCount = 0;
       calRetryCount = 0;
+      // Reset ceiling-hold timer — ec_target or autoDosing may have changed,
+      // so the new cycle gets a fresh 30-min window from scratch.
+      ceilingHoldStart    = 0;
+      lastCeilingLogMs    = 0;
+      lastLoggedCeilingEc = -1.0f;
       enterState(AUTO_STARTUP_WAIT);
       LOGF("[Auto] Starting — waiting %lus\n", INITIAL_WAIT / 1000);
       break;
