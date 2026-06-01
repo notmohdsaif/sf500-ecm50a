@@ -582,7 +582,29 @@ void checkAutoDosing()
         actualCalDuration = max((unsigned int)SMART_CAL_DURATION, dosingTime);
         smartCalPhase     = true;
         wlBeforeCal       = sensors.wl;
-        thisDoseTime      = actualCalDuration;
+
+        // P11B: cap calibration dose to 70% of available EC headroom when a prior rate exists.
+        // Prevents re-calibration from overshooting when EC is already near target.
+        // Skipped when ecRiseRate == 0 (first-ever calibration — no rate to estimate from).
+        // Conservative floor: use max(effectiveRate, SMART_RATE_MAX) so a dramatically
+        // underestimated stored rate cannot produce a falsely large safeTime.
+        if (ecRiseRate > 0.0f)
+        {
+          float headroom      = (ecTarget + EC_CEILING_MARGIN) - preDoseEC;
+          float effectiveRate = ecRiseRate *
+                                (wlAtCal > 0.0f ? wlAtCal / wlBeforeCal : 1.0f);
+          float conservativeRate = max(effectiveRate, SMART_RATE_MAX);
+          if (headroom > 0.0f)
+          {
+            unsigned int safeTime = (unsigned int)(headroom * 0.7f / conservativeRate);
+            actualCalDuration     = max((unsigned int)SMART_MIN_DOSE,
+                                        min(actualCalDuration, safeTime));
+            LOGF("[Smart] Headroom cap: %.2f mS/cm headroom rate=%.5f -> safe cal %ds\n",
+                 headroom, conservativeRate, actualCalDuration);
+          }
+        }
+
+        thisDoseTime = actualCalDuration;
         LOGF("[Smart] Calibration dose: %ds (WL=%.0f)\n", actualCalDuration, wlBeforeCal);
       }
       else if (smartDosing && smartCalibrated && ecRiseRate > 0.0f)
@@ -834,14 +856,21 @@ void checkAutoDosing()
         {
           // Skip accuracy check on aborted doses — actual dose time < planned time guarantees
           // false error, which would invalidate good calibration data.
-          float predicted = ecRiseRate * (float)computedDoseTime;
+          //
+          // P11A: WL-normalise the prediction before comparing.
+          // computedDoseTime was extended by the WL correction factor (wl/wlAtCal), so
+          // multiplying by ecRiseRate (calibrated at wlAtCal) double-inflates the prediction.
+          // Dividing back by the same factor gives the true expected rise.
+          float wlNorm    = (wlAtCal > 0.0f && sensors.wl > 0.0f)
+                            ? wlAtCal / sensors.wl : 1.0f;
+          float predicted = ecRiseRate * (float)computedDoseTime * wlNorm;
           if (predicted > 0.0f)
           {
             float error = fabsf(ecRise - predicted) / predicted;
             if (error > SMART_ERROR_THRESHOLD)
             {
-              LOGF("[Smart] Prediction error %.0f%% — re-calibrating next cycle\n",
-                   error * 100.0f);
+              LOGF("[Smart] Prediction error %.0f%% (pred=%.3f act=%.3f) — re-calibrating\n",
+                   error * 100.0f, predicted, ecRise);
               smartCalibrated  = false;
               computedDoseTime = 0;
             }
