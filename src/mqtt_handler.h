@@ -9,3 +9,4 @@
 void reconnectMQTT();
 void mqttCallback(char *topic, byte *payload, unsigned int length);
 void publishRelayStatus();
+void writePlugRelay(bool state);
