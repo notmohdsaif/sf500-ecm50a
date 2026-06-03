@@ -58,6 +58,12 @@ bool relayStates[2] = {false, false};
 unsigned long relayTimers[2] = {0, 0};
 unsigned int relayDurations[2] = {0, 0};
 
+String        tasmotaPlugTopic   = "";
+bool          tasmotaPlugEnabled = false;
+bool          r3State            = false;
+unsigned long r3Timer            = 0;
+unsigned int  r3Duration         = 0;
+
 bool autoDosing = false;
 bool autoMixing = false;
 float ecTarget = 1.5f;

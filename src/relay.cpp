@@ -6,6 +6,7 @@
 #include "relay.h"
 #include "logger.h"
 #include "mqtt_handler.h"   // publishRelayStatus()
+#include "cloud.h"           // logDeviceActivity()
 #include <HTTPClient.h>
 
 // =====================================================
@@ -88,6 +89,28 @@ void checkRelayTimers()
       LOGF("R%d timer expired\n", i + 1);
     }
   }
+
+  if (r3Duration > 0 && r3Timer > 0)
+  {
+    unsigned long elapsed = now - r3Timer;
+    unsigned long total   = r3Duration * 1000UL;
+
+    static unsigned long lastDebugR3 = 0;
+    if (now - lastDebugR3 >= 10000)
+    {
+      unsigned long remaining = (elapsed < total) ? (total - elapsed) / 1000 : 0;
+      LOGF("R3 timer: %lus remaining\n", remaining);
+      lastDebugR3 = now;
+    }
+
+    if (elapsed >= total)
+    {
+      r3Duration = 0;
+      r3Timer    = 0;
+      writePlugRelay(false);
+      LOGLN("R3 timer expired");
+    }
+  }
 }
 
 // =====================================================
@@ -122,7 +145,20 @@ void checkSchedules()
     if (sch.hour != (uint8_t)ti.tm_hour ||
         sch.minute != (uint8_t)ti.tm_min)               continue;
     if (lastTriggeredTime[i] == (unsigned long)marker)  continue;
-    if (sch.relayNum < 1 || sch.relayNum > 2)           continue;
+    if (sch.relayNum < 1 || sch.relayNum > 3)           continue;
+
+    if (sch.relayNum == 3)
+    {
+      if (!tasmotaPlugEnabled || r3Duration > 0) continue;
+      LOGLNS("\n[SCHEDULE] " + sch.name);
+      LOGF("  R3 (Plug) ON for %ds\n", sch.duration);
+      lastTriggeredTime[i] = (unsigned long)marker;
+      r3Duration = sch.duration;
+      r3Timer    = millis();
+      writePlugRelay(true);
+      logDeviceActivity("schedule", (String("Schedule \"") + sch.name + "\": R3 ON for " + sch.duration + "s").c_str());
+      continue;
+    }
 
     int idx = sch.relayNum - 1;
     if (relayDurations[idx] > 0)
@@ -135,6 +171,7 @@ void checkSchedules()
     relayDurations[idx]   = sch.duration;
     relayTimers[idx]      = millis();
     writeRelay(sch.relayNum, true);
+    logDeviceActivity("schedule", (String("Schedule \"") + sch.name + "\": R" + sch.relayNum + " ON for " + sch.duration + "s").c_str());
   }
 }
 
@@ -173,6 +210,10 @@ void handleSerialCommands()
     delay(50);
     writeRelay(2, false);
   }
+  else if (cmd == "PLUGON")
+    writePlugRelay(true);
+  else if (cmd == "PLUGOFF")
+    writePlugRelay(false);
   else if (cmd == "WIFIINFO")
   {
     LOGLN("\n--- WiFi Info ---");
@@ -216,6 +257,7 @@ void handleSerialCommands()
     LOGLN("R1ON/R1OFF   - Relay 1 (Dosing)");
     LOGLN("R2ON/R2OFF   - Relay 2 (Mixing)");
     LOGLN("ALLON/ALLOFF - All relays");
+    LOGLN("PLUGON/PLUGOFF - Relay 3 (Tasmota Plug)");
     LOGLN("WIFIINFO     - WiFi status");
     LOGLN("RAINRESET    - Try resetting rain counter (test)");
     LOGLN("HELP         - This list");
