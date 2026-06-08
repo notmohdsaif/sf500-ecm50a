@@ -22,7 +22,11 @@ void reconnectMQTT()
       mqttClient.subscribe(topicRelayUpdate.c_str());
       mqttClient.subscribe(topicWifiCmd.c_str());
       if (tasmotaPlugEnabled && tasmotaPlugTopic.length() > 0)
+      {
         mqttClient.subscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
+        // Query current plug state so r3State reflects reality after reconnect
+        mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Power").c_str(), "");
+      }
       publishRelayStatus();
 
       // Publish wifi info immediately so dashboard updates without waiting for sensor cycle
@@ -249,10 +253,33 @@ void writePlugRelay(bool state)
   if (!tasmotaPlugEnabled || tasmotaPlugTopic.length() == 0)
     return;
 
-  String cmdTopic = "cmnd/" + tasmotaPlugTopic + "/Power";
-  mqttClient.publish(cmdTopic.c_str(), state ? "1" : "0");
+  String backlogTopic = "cmnd/" + tasmotaPlugTopic + "/Backlog";
+
+  if (state && r3Duration > 0)
+  {
+    // Embed PulseTime so the plug auto-shuts off even if the ESP32 reboots mid-session.
+    // PulseTime formula: 1-111 = value × 0.1s; 112-64900 = (value-100)s.
+    uint32_t dur  = (r3Duration > 64800) ? 64800 : (uint32_t)r3Duration;
+    uint32_t pval = (dur < 12) ? dur * 10 : dur + 100;
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "PulseTime1 %lu; Power1 1", (unsigned long)pval);
+    mqttClient.publish(backlogTopic.c_str(), cmd);
+    LOGF("R3 (Plug) -> ON (PulseTime=%lus via Backlog)\n", (unsigned long)dur);
+  }
+  else if (state)
+  {
+    // ON without a duration — plain command, no PulseTime
+    mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Power").c_str(), "1");
+    LOGLN("R3 (Plug) -> ON");
+  }
+  else
+  {
+    // OFF — clear PulseTime first so it doesn't fire after a future reboot
+    mqttClient.publish(backlogTopic.c_str(), "PulseTime1 0; Power1 0");
+    LOGLN("R3 (Plug) -> OFF (PulseTime cleared)");
+  }
+
   r3State = state;
-  LOGF("R3 (Plug) -> %s\n", state ? "ON" : "OFF");
 
   if (WiFi.status() == WL_CONNECTED)
   {
@@ -269,7 +296,7 @@ void writePlugRelay(bool state)
       http.addHeader("Content-Type", "application/json");
       http.addHeader("apikey", SUPABASE_KEY);
       http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-      http.setTimeout(15000);
+      http.setTimeout(4000);   // was 15s — relay metrics are audit-only, don't block the loop
       http.POST(payload);
       http.end();
     }

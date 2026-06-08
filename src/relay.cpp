@@ -46,7 +46,7 @@ void writeRelay(uint8_t num, bool state)
       http.addHeader("Content-Type", "application/json");
       http.addHeader("apikey", SUPABASE_KEY);
       http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-      http.setTimeout(15000);
+      http.setTimeout(4000);   // was 15s — relay metrics are audit-only, don't block the loop
       http.POST(payload);
       http.end();
     }
