@@ -186,6 +186,11 @@ void setup()
   mqttClient.setBufferSize(4096);
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
+  // Keepalive headroom: a single blocking HTTP call (≤6s) must not exceed the
+  // keepalive window, or the broker drops us mid-loop and the dashboard sees
+  // the device "go offline" until a page refresh catches the next publish.
+  mqttClient.setKeepAlive(60);     // default was 15s
+  mqttClient.setSocketTimeout(8);  // default was 15s
 
   LOGLNS("Device: " + deviceName + " (" + deviceMAC + ")\n");
 
@@ -236,6 +241,7 @@ void setup()
   if (wifiState == STATE_ONLINE)
   {
     secureClient.setInsecure();
+    secureClient.setHandshakeTimeout(5);  // bound stalled TLS handshakes (s)
     delay(500);
 
     syncTimeWithNTP();
@@ -282,6 +288,7 @@ void loop()
   {
     LOGLN("[WiFi] Portal complete, initializing...");
     secureClient.setInsecure();
+    secureClient.setHandshakeTimeout(5);  // bound stalled TLS handshakes (s)
     delay(500);
 
     syncTimeWithNTP();

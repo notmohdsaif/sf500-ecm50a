@@ -45,7 +45,14 @@ void reconnectMQTT()
       LOGLN("MQTT connected");
       return;
     }
-    delay(2000);
+    // Keep the relay auto-off timer running even while the broker is slow to
+    // accept us — otherwise a timed relay can overrun its duration during a
+    // reconnect storm.
+    for (int w = 0; w < 10; w++)
+    {
+      checkRelayTimers();
+      delay(200);
+    }
   }
 }
 

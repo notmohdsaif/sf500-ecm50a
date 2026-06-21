@@ -289,7 +289,7 @@ void updateDeviceStatus(const char *status)
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(15000);
+  http.setTimeout(6000);   // runs every 30s in loop() — keep well under MQTT keepalive
   http.PATCH(payload);
   http.end();
 }
@@ -310,7 +310,7 @@ void fetchDeviceConfig()
 
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(15000);
+  http.setTimeout(6000);   // runs every 10s in loop() — keep well under MQTT keepalive
 
   int code = http.GET();
   if (code != 200) { http.end(); return; }
@@ -518,7 +518,7 @@ void fetchSchedules()
 
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(15000);
+  http.setTimeout(6000);   // runs every 60s in loop() — keep well under MQTT keepalive
 
   int code = http.GET();
   if (code != 200) { http.end(); return; }
