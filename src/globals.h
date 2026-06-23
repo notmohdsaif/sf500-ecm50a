@@ -113,6 +113,13 @@ extern bool          relayStates[2];
 extern unsigned long relayTimers[2];
 extern unsigned int  relayDurations[2];
 
+// Tasmota Plug (Relay 3)
+extern String        tasmotaPlugTopic;
+extern bool          tasmotaPlugEnabled;
+extern bool          r3State;
+extern unsigned long r3Timer;
+extern unsigned int  r3Duration;
+
 // EC automation — config
 extern bool          autoDosing;
 extern bool          autoMixing;

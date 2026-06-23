@@ -58,6 +58,12 @@ bool relayStates[2] = {false, false};
 unsigned long relayTimers[2] = {0, 0};
 unsigned int relayDurations[2] = {0, 0};
 
+String        tasmotaPlugTopic   = "";
+bool          tasmotaPlugEnabled = false;
+bool          r3State            = false;
+unsigned long r3Timer            = 0;
+unsigned int  r3Duration         = 0;
+
 bool autoDosing = false;
 bool autoMixing = false;
 float ecTarget = 1.5f;
@@ -180,6 +186,11 @@ void setup()
   mqttClient.setBufferSize(4096);
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
+  // Keepalive headroom: a single blocking HTTP call (≤6s) must not exceed the
+  // keepalive window, or the broker drops us mid-loop and the dashboard sees
+  // the device "go offline" until a page refresh catches the next publish.
+  mqttClient.setKeepAlive(60);     // default was 15s
+  mqttClient.setSocketTimeout(8);  // default was 15s
 
   LOGLNS("Device: " + deviceName + " (" + deviceMAC + ")\n");
 
@@ -230,6 +241,7 @@ void setup()
   if (wifiState == STATE_ONLINE)
   {
     secureClient.setInsecure();
+    secureClient.setHandshakeTimeout(5);  // bound stalled TLS handshakes (s)
     delay(500);
 
     syncTimeWithNTP();
@@ -276,6 +288,7 @@ void loop()
   {
     LOGLN("[WiFi] Portal complete, initializing...");
     secureClient.setInsecure();
+    secureClient.setHandshakeTimeout(5);  // bound stalled TLS handshakes (s)
     delay(500);
 
     syncTimeWithNTP();

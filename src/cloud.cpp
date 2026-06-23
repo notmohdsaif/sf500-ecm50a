@@ -289,7 +289,7 @@ void updateDeviceStatus(const char *status)
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(15000);
+  http.setTimeout(6000);   // runs every 30s in loop() — keep well under MQTT keepalive
   http.PATCH(payload);
   http.end();
 }
@@ -303,14 +303,14 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled";
 
   if (!http.begin(secureClient, url))
     return;
 
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(15000);
+  http.setTimeout(6000);   // runs every 10s in loop() — keep well under MQTT keepalive
 
   int code = http.GET();
   if (code != 200) { http.end(); return; }
@@ -318,7 +318,7 @@ void fetchDeviceConfig()
   String response = http.getString();
   http.end();
 
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<512> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
   if (doc.size() == 0) return;
 
@@ -412,6 +412,94 @@ void fetchDeviceConfig()
 
   if (changed && autoDosing)
     LOGF("[INFO] Dose when EC < %.2f\n", ecMinusHys);
+
+  if (!dev["tasmota_plug_enabled"].isNull())
+    tasmotaPlugEnabled = dev["tasmota_plug_enabled"].as<bool>();
+
+  if (!dev["tasmota_plug_topic"].isNull())
+  {
+    String newTopic = dev["tasmota_plug_topic"].as<String>();
+    if (newTopic != tasmotaPlugTopic && mqttClient.connected())
+    {
+      if (tasmotaPlugTopic.length() > 0)
+        mqttClient.unsubscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
+      tasmotaPlugTopic = newTopic;
+      if (tasmotaPlugEnabled && tasmotaPlugTopic.length() > 0)
+      {
+        mqttClient.subscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
+        LOGLNS("[CONFIG] Tasmota plug: " + tasmotaPlugTopic);
+      }
+    }
+    else if (newTopic != tasmotaPlugTopic)
+    {
+      tasmotaPlugTopic = newTopic;
+    }
+  }
+}
+
+// =====================================================
+// TASMOTA TIMER SYNC
+// Pushes active R3 schedules into the plug's built-in Timer slots so schedules
+// execute autonomously even when the ESP32 is offline.
+// Each schedule = 2 slots (ON + OFF). Max 8 schedule pairs fit in 16 slots.
+// Runs at the end of every fetchSchedules() call when the plug is connected.
+// =====================================================
+
+static void syncR3TimersToTasmota()
+{
+  if (!tasmotaPlugEnabled || tasmotaPlugTopic.length() == 0) return;
+  if (!mqttClient.connected()) return;
+
+  int slot    = 1;
+  int r3Count = 0;
+
+  for (int i = 0; i < scheduleCount && slot <= 15; i++)
+  {
+    Schedule &sch = schedules[i];
+    if (sch.relayNum != 3 || !sch.enabled) continue;
+    r3Count++;
+
+    // Build 7-char bitmask: SMTWTFS (Tasmota day order matches our days[] array)
+    char days[8];
+    for (int d = 0; d < 7; d++)
+      days[d] = sch.days[d] ? '1' : '0';
+    days[7] = '\0';
+
+    // ON timer
+    char onMsg[152];
+    snprintf(onMsg, sizeof(onMsg),
+      "{\"Enable\":1,\"Mode\":0,\"Time\":\"%02d:%02d\","
+      "\"Window\":0,\"Days\":\"%s\",\"Repeat\":1,\"Output\":1,\"Action\":1}",
+      sch.hour, sch.minute, days);
+    mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Timer" + String(slot)).c_str(), onMsg);
+    slot++;
+
+    if (slot > 16) break;
+
+    // OFF timer = ON time + duration (rounded up to nearest minute)
+    int offTotalMin = (int)sch.hour * 60 + (int)sch.minute + ((sch.duration + 59) / 60);
+    int offHour = (offTotalMin / 60) % 24;
+    int offMin  = offTotalMin % 60;
+
+    char offMsg[152];
+    snprintf(offMsg, sizeof(offMsg),
+      "{\"Enable\":1,\"Mode\":0,\"Time\":\"%02d:%02d\","
+      "\"Window\":0,\"Days\":\"%s\",\"Repeat\":1,\"Output\":1,\"Action\":0}",
+      offHour, offMin, days);
+    mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Timer" + String(slot)).c_str(), offMsg);
+    slot++;
+  }
+
+  // Wipe remaining slots so stale schedules don't linger after deletions
+  for (; slot <= 16; slot++)
+    mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Timer" + String(slot)).c_str(),
+                       "{\"Enable\":0}");
+
+  // Enable/disable Tasmota timer feature
+  mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Timers").c_str(),
+                     r3Count > 0 ? "1" : "0");
+
+  LOGF("[R3] Synced %d schedule(s) → Tasmota timers\n", r3Count);
 }
 
 // =====================================================
@@ -430,7 +518,7 @@ void fetchSchedules()
 
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(15000);
+  http.setTimeout(6000);   // runs every 60s in loop() — keep well under MQTT keepalive
 
   int code = http.GET();
   if (code != 200) { http.end(); return; }
@@ -488,6 +576,10 @@ void fetchSchedules()
                   schedules[i].minute,
                   schedules[i].duration);
   }
+
+  // Push R3 schedules into plug-side Tasmota timers so they fire autonomously
+  // even when the ESP32 is offline.
+  syncR3TimersToTasmota();
 }
 
 // =====================================================

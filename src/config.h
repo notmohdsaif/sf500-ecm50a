@@ -71,6 +71,8 @@
 #define DOSE_ABORT_MARGIN 0.05f      // abort active dose if EC exceeds target by this margin (mS/cm)
 #define SMART_WL_FACTOR_MAX 1.5f     // cap upward WL correction factor (prevents over-extension at high WL)
 #define SMART_CAL_MAX_RETRIES 5      // max consecutive calibration failures before alarm
+#define SMART_RATE_MAX 0.02f         // P5 upper bound on ec_rate (mS/cm/s) — used as conservative floor
+                                     // in headroom cap so a stale underestimated rate cannot bypass the cap
 
 // EC Automation — timing (milliseconds)
 #define INITIAL_WAIT 60000UL
@@ -85,7 +87,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.1.3"
+#define FIRMWARE_VERSION "1.1.6"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"
