@@ -18,10 +18,11 @@ void reconnectMQTT()
   for (int i = 0; i < 5 && !mqttClient.connected(); i++)
   {
     String clientId = "SF500_" + lastSix;
-    if (mqttClient.connect(clientId.c_str()))
+    if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS))
     {
       mqttClient.subscribe(topicRelayUpdate.c_str());
       mqttClient.subscribe(topicWifiCmd.c_str());
+      mqttClient.subscribe(topicDeviceCmd.c_str());
       if (tasmotaPlugEnabled && tasmotaPlugTopic.length() > 0)
       {
         mqttClient.subscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
@@ -98,6 +99,26 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       {
         LOGLN("[WiFi] Portal command received");
         pendingWifiPortal = true;
+      }
+    }
+    return;
+  }
+
+  // --- Device command handler (sensor rescan) ---
+  if (topicStr == topicDeviceCmd)
+  {
+    String msg;
+    for (unsigned int i = 0; i < length; i++)
+      msg += (char)payload[i];
+
+    StaticJsonDocument<64> doc;
+    if (deserializeJson(doc, msg) == DeserializationError::Ok)
+    {
+      String cmd = doc["cmd"].as<String>();
+      if (cmd == "rescan")
+      {
+        LOGLN("[Rescan] Command received");
+        pendingRescan = true;
       }
     }
     return;
