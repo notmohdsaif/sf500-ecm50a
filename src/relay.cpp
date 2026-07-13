@@ -169,6 +169,14 @@ void checkSchedules()
     if (sch.relayNum == 3)
     {
       if (!tasmotaPlugEnabled || r3Duration > 0) continue;
+
+      if (plugMode == "refill" && wlSensorFound && refillCutoffMm > 0.0f && sensors.wl >= refillCutoffMm)
+      {
+        lastTriggeredTime[i] = (unsigned long)marker;
+        logDeviceActivity("schedule", "Skipped Refill: water level already at 95%");
+        continue;
+      }
+
       LOGLNS("\n[SCHEDULE] " + sch.name);
       LOGF("  R3 (Plug) ON for %ds\n", sch.duration);
       lastTriggeredTime[i] = (unsigned long)marker;

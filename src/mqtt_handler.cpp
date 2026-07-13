@@ -6,6 +6,7 @@
 #include "mqtt_handler.h"
 #include "logger.h"
 #include "relay.h"    // writeRelay()
+#include "cloud.h"    // logDeviceActivity()
 #include <HTTPClient.h>
 
 // =====================================================
@@ -153,7 +154,11 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     int val = doc["r3"];
     if (val == 0 || val == 1)
     {
-      if (val == 1 && duration > 0)
+      if (val == 1 && plugMode == "refill" && wlSensorFound && refillCutoffMm > 0.0f && sensors.wl >= refillCutoffMm)
+      {
+        logDeviceActivity("plug", "Refill blocked: water level already at 95%");
+      }
+      else if (val == 1 && duration > 0)
       {
         r3Duration = duration;
         r3Timer    = millis();
