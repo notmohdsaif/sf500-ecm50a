@@ -177,6 +177,15 @@ void checkSchedules()
         continue;
       }
 
+      if (plugMode == "fertigate" && ecSensorFound && fabs(sensors.ec - ecTarget) > FERTIGATE_EC_TOLERANCE)
+      {
+        lastTriggeredTime[i] = (unsigned long)marker;
+        char msg[80];
+        snprintf(msg, sizeof(msg), "Skip fertigation due to EC out of range (EC: %.2f mS/cm)", sensors.ec);
+        logDeviceActivity("schedule", msg);
+        continue;
+      }
+
       LOGLNS("\n[SCHEDULE] " + sch.name);
       LOGF("  R3 (Plug) ON for %ds\n", sch.duration);
       lastTriggeredTime[i] = (unsigned long)marker;

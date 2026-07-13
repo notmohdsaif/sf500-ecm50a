@@ -158,6 +158,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       {
         logDeviceActivity("plug", "Refill blocked: water level already at 95%");
       }
+      else if (val == 1 && plugMode == "fertigate" && ecSensorFound && fabs(sensors.ec - ecTarget) > FERTIGATE_EC_TOLERANCE)
+      {
+        logDeviceActivity("plug", "Fertigate blocked: EC out of range");
+      }
       else if (val == 1 && duration > 0)
       {
         r3Duration = duration;
