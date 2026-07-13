@@ -174,7 +174,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 // PUBLISH RELAY STATUS
 // =====================================================
 
-void publishRelayStatus()
+void publishRelayStatus(const char* r3Reason)
 {
   if (!mqttClient.connected())
     return;
@@ -183,6 +183,8 @@ void publishRelayStatus()
   doc["r1"] = relayStates[0] ? 1 : 0;
   doc["r2"] = relayStates[1] ? 1 : 0;
   doc["r3"] = r3State ? 1 : 0;
+  if (r3Reason != nullptr)
+    doc["r3_reason"] = r3Reason;
 
   unsigned long now = millis();
   unsigned long maxRemaining = 0;
