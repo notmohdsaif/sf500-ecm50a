@@ -11,6 +11,7 @@
 #include "sensors.h"
 #include "relay.h"
 #include "ota.h"
+#include <esp_task_wdt.h>
 
 // =====================================================
 // GLOBAL VARIABLE DEFINITIONS
@@ -40,8 +41,10 @@ String mqttTopicData;
 String topicRelayUpdate;
 String topicRelayStatus;
 String topicWifiCmd;
+String topicDeviceCmd;
 bool pendingWifiForget = false;
 bool pendingWifiPortal = false;
+bool pendingRescan = false;
 
 uint8_t ecSensorId   = 0;
 uint8_t wlSensorId   = 0;
@@ -181,6 +184,7 @@ void setup()
   topicRelayUpdate = "sf500/" + lastSix + "/relay_update";
   topicRelayStatus = "sf500/" + lastSix + "/relay_status";
   topicWifiCmd     = "sf500/" + lastSix + "/wifi_cmd";
+  topicDeviceCmd   = "sf500/" + lastSix + "/device_cmd";
 #ifdef ENABLE_OTA_LOGS
   topicLogs        = "sf500/" + lastSix + "/logs";
 #endif
@@ -264,6 +268,11 @@ void setup()
       startupTime = millis();
     }
   }
+
+  // Watchdog: if loop() freezes for >60s, hard-reset the device.
+  // 60s covers worst-case WiFi reconnect (30s) + one blocking HTTP call (6s).
+  esp_task_wdt_init(60, true);
+  esp_task_wdt_add(NULL);
 }
 
 // =====================================================
@@ -273,6 +282,7 @@ void setup()
 void loop()
 {
   unsigned long now = millis();
+  esp_task_wdt_reset();
 
   checkRelayTimers();
   handleSerialCommands();

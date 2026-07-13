@@ -91,10 +91,14 @@ extern String mqttTopicData;
 extern String topicRelayUpdate;
 extern String topicRelayStatus;
 extern String topicWifiCmd;
+extern String topicDeviceCmd;
 
 // Pending WiFi commands (set in callback, executed in loop to avoid re-entrancy)
 extern bool pendingWifiForget;
 extern bool pendingWifiPortal;
+
+// Pending sensor rescan (set in callback, executed in loop to avoid re-entrancy)
+extern bool pendingRescan;
 
 // Sensor state
 extern uint8_t    ecSensorId;
