@@ -22,7 +22,7 @@
 #define SUPABASE_URL "https://qkqeysggrqhxizkdmbhx.supabase.co"
 
 // MQTT
-#define MQTT_BROKER "broker.emqx.io"
+#define MQTT_BROKER "43.217.242.221"
 #define MQTT_PORT 1883
 
 // Hardware Pins (ECM50-A)

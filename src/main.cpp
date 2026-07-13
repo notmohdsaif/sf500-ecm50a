@@ -45,6 +45,7 @@ String topicDeviceCmd;
 bool pendingWifiForget = false;
 bool pendingWifiPortal = false;
 bool pendingRescan = false;
+uint32_t rescanSeq = 0;
 
 uint8_t ecSensorId   = 0;
 uint8_t wlSensorId   = 0;
@@ -390,7 +391,15 @@ void loop()
     startWiFiPortal();
   }
 
+  // --- MQTT keepalive ---
+  if (!mqttClient.connected())
+    reconnectMQTT();
+  mqttClient.loop();
+
   // --- Pending sensor rescan (deferred from MQTT callback to avoid re-entrancy) ---
+  // Checked immediately after mqttClient.loop() (which is what actually sets the flag,
+  // via mqttCallback) rather than before it — otherwise a rescan command sits unhandled
+  // for a full extra loop() iteration, padded by whatever periodic task is due that tick.
   if (pendingRescan)
   {
     pendingRescan = false;
@@ -403,17 +412,13 @@ void loop()
       LOGLN("[Rescan] Running initSensors()");
       initSensors();
       uploadSensorConfig();
+      rescanSeq++;
     }
     else
     {
       LOGLN("[Rescan] Ignored — auto-dosing busy");
     }
   }
-
-  // --- MQTT keepalive ---
-  if (!mqttClient.connected())
-    reconnectMQTT();
-  mqttClient.loop();
 
   // --- Periodic tasks ---
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL)

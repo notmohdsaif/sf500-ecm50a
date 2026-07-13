@@ -53,7 +53,7 @@ void checkForOTAUpdate()
 
   http.addHeader("User-Agent", "ESP32-SF500");
   http.addHeader("Accept",     "application/vnd.github.v3+json");
-  http.setTimeout(15000);
+  http.setTimeout(6000);   // runs every 6h in loop() — keep well under MQTT keepalive
 
   int code = http.GET();
   if (code != 200)
@@ -65,6 +65,7 @@ void checkForOTAUpdate()
 
   // --- Step 2: Parse JSON (stream to avoid large heap copy) ---
   DynamicJsonDocument doc(8192);
+  if (doc.capacity() == 0) { LOGLN("[OTA] JSON alloc failed (low heap)"); http.end(); return; }
   DeserializationError err = deserializeJson(doc, http.getStream());
   http.end();
 

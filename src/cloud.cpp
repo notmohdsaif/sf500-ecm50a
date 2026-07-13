@@ -113,7 +113,7 @@ void registerDevice()
 
 void uploadSensorConfig()
 {
-  if (!ecSensorFound && !wlSensorFound)
+  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
     return;
 
   HTTPClient http;
@@ -166,7 +166,7 @@ void uploadSensorConfig()
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.addHeader("Prefer", "return=representation");
-  http.setTimeout(15000);
+  http.setTimeout(3000);   // can run outside boot (e.g. rescan) — keep well under MQTT keepalive
 
   int code = http.PATCH(payload);
   http.end();
@@ -187,6 +187,7 @@ void uploadSensorReadings()
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
   DynamicJsonDocument doc(768);
+  if (doc.capacity() == 0) { LOGLN("[UPLOAD] JSON alloc failed (low heap)"); return; }
   JsonArray arr = doc.to<JsonArray>();
 
   if (ecSensorFound)
@@ -280,8 +281,20 @@ void updateDeviceStatus(const char *status)
   if (!http.begin(secureClient, url))
     return;
 
-  StaticJsonDocument<64> doc;
+  StaticJsonDocument<128> doc;
   doc["status"] = status;
+
+  time_t now = time(nullptr);
+  if (now > 1000000000)   // only include once NTP has synced
+  {
+    struct tm ti;
+    localtime_r(&now, &ti);
+    char ts[30];
+    sprintf(ts, "%04d-%02d-%02dT%02d:%02d:%02d+08:00",
+            ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+            ti.tm_hour, ti.tm_min, ti.tm_sec);
+    doc["last_heartbeat_at"] = ts;
+  }
 
   String payload;
   serializeJson(doc, payload);
@@ -583,6 +596,7 @@ void fetchSchedules()
   http.end();
 
   DynamicJsonDocument doc(4096);
+  if (doc.capacity() == 0) { LOGLN("[SCHEDULE] JSON alloc failed (low heap)"); return; }
   if (deserializeJson(doc, response) != DeserializationError::Ok)
     return;
 
@@ -664,7 +678,7 @@ void logDeviceActivity(const char *category, const char *action)
   http.addHeader("apikey",        SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.addHeader("Prefer",        "return=minimal");
-  http.setTimeout(10000);
+  http.setTimeout(3000);   // keep well under MQTT keepalive — this can run outside boot (e.g. rescan)
   http.POST(payload);
   http.end();
 }

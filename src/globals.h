@@ -99,6 +99,8 @@ extern bool pendingWifiPortal;
 
 // Pending sensor rescan (set in callback, executed in loop to avoid re-entrancy)
 extern bool pendingRescan;
+extern uint32_t rescanSeq; // increments each time a rescan actually completes — lets the
+                            // dashboard detect completion even when the result is unchanged
 
 // Sensor state
 extern uint8_t    ecSensorId;
