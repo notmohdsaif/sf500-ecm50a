@@ -390,6 +390,26 @@ void loop()
     startWiFiPortal();
   }
 
+  // --- Pending sensor rescan (deferred from MQTT callback to avoid re-entrancy) ---
+  if (pendingRescan)
+  {
+    pendingRescan = false;
+    bool busy = autoDosing &&
+                autoState != AUTO_IDLE &&
+                autoState != AUTO_STARTUP_WAIT &&
+                autoState != AUTO_SAMPLING;
+    if (!busy)
+    {
+      LOGLN("[Rescan] Running initSensors()");
+      initSensors();
+      uploadSensorConfig();
+    }
+    else
+    {
+      LOGLN("[Rescan] Ignored — auto-dosing busy");
+    }
+  }
+
   // --- MQTT keepalive ---
   if (!mqttClient.connected())
     reconnectMQTT();
