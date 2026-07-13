@@ -63,6 +63,8 @@ bool          tasmotaPlugEnabled = false;
 bool          r3State            = false;
 unsigned long r3Timer            = 0;
 unsigned int  r3Duration         = 0;
+String        plugMode           = "custom";
+float         refillCutoffMm     = 0.0f;
 
 bool autoDosing = false;
 bool autoMixing = false;

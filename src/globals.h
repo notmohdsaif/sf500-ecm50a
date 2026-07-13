@@ -119,6 +119,8 @@ extern bool          tasmotaPlugEnabled;
 extern bool          r3State;
 extern unsigned long r3Timer;
 extern unsigned int  r3Duration;
+extern String        plugMode;         // "refill" | "fertigate" | "custom"
+extern float          refillCutoffMm;  // 0 until fetched; guard with > 0 before use
 
 // EC automation — config
 extern bool          autoDosing;

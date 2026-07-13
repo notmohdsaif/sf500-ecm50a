@@ -295,6 +295,47 @@ void updateDeviceStatus(const char *status)
 }
 
 // =====================================================
+// FETCH REFILL TANK MAX — only queried while plugMode == "refill"
+// =====================================================
+
+static void fetchRefillTankMax()
+{
+  if (!wlSensorFound) return;
+
+  char sensorId[8];
+  sprintf(sensorId, "wl_%02d", wlSensorId);
+
+  HTTPClient http;
+  String url = String(SUPABASE_URL) +
+               "/rest/v1/sensor_config?device=eq." + deviceName +
+               "&sensor_id=eq." + sensorId + "&select=max_thres";
+
+  if (!http.begin(secureClient, url))
+    return;
+
+  http.addHeader("apikey", SUPABASE_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+  http.setTimeout(6000);
+
+  int code = http.GET();
+  if (code != 200) { http.end(); return; }
+
+  String response = http.getString();
+  http.end();
+
+  StaticJsonDocument<128> doc;
+  if (deserializeJson(doc, response) != DeserializationError::Ok) return;
+  if (doc.size() == 0) return;
+
+  if (!doc[0]["max_thres"].isNull())
+  {
+    float tankMax = doc[0]["max_thres"];
+    refillCutoffMm = tankMax * REFILL_CUTOFF_PCT;
+    LOGF("[CONFIG] Refill cutoff: %.0fmm (%.0f%% of %.0fmm tank)\n", refillCutoffMm, REFILL_CUTOFF_PCT * 100, tankMax);
+  }
+}
+
+// =====================================================
 // DEVICE CONFIG FETCH
 // =====================================================
 
@@ -303,7 +344,7 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode";
 
   if (!http.begin(secureClient, url))
     return;
@@ -435,6 +476,21 @@ void fetchDeviceConfig()
       tasmotaPlugTopic = newTopic;
     }
   }
+
+  if (!dev["tasmota_plug_mode"].isNull())
+  {
+    String newMode = dev["tasmota_plug_mode"].as<String>();
+    if (newMode != plugMode)
+    {
+      plugMode = newMode;
+      LOGLNS("[CONFIG] Smart Plug mode: " + plugMode);
+      if (plugMode != "refill")
+        refillCutoffMm = 0.0f;  // stale value must not linger if mode is switched away then back before a refetch
+    }
+  }
+
+  if (plugMode == "refill")
+    fetchRefillTankMax();
 }
 
 // =====================================================
