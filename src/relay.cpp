@@ -114,6 +114,25 @@ void checkRelayTimers()
 }
 
 // =====================================================
+// REFILL AUTO-CUTOFF — stops R3 the instant WL reaches the Refill threshold
+// Runs every 1s from loop(), right after readSensors() refreshes sensors.wl.
+// =====================================================
+
+void checkRefillCutoff()
+{
+  if (!r3State) return;
+  if (plugMode != "refill") return;
+  if (!wlSensorFound || refillCutoffMm <= 0.0f) return;
+  if (sensors.wl < refillCutoffMm) return;
+
+  writePlugRelay(false);
+  r3Duration = 0;
+  r3Timer    = 0;
+  logDeviceActivity("plug", "Refill stopped: water level reached 95%");
+  publishRelayStatus("refill_complete");
+}
+
+// =====================================================
 // SCHEDULE CHECK — triggers relay at configured time
 // Bug fix: marker uses month+day+hour+min (no year) to avoid uint32 overflow
 // =====================================================

@@ -390,6 +390,7 @@ void loop()
   {
     readSensors();
     lastSensorRead = now;
+    checkRefillCutoff();
     if (autoDosing && ecSensorFound)
       checkAutoDosing();
   }
