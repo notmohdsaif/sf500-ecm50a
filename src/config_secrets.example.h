@@ -7,3 +7,7 @@
 // Supabase anon/service key used by device
 #define SUPABASE_KEY "REPLACE_ME"
 
+// MQTT credentials — public broker.emqx.io is anonymous, leave empty
+#define MQTT_USER ""
+#define MQTT_PASS ""
+

@@ -32,6 +32,8 @@ jobs:
           #pragma once
           #define AP_PASS "${{ secrets.AP_PASS }}"
           #define SUPABASE_KEY "${{ secrets.SUPABASE_KEY }}"
+          #define MQTT_USER ""
+          #define MQTT_PASS ""
           EOF
 
       - name: Build firmware
