@@ -22,7 +22,7 @@
 #define SUPABASE_URL "https://qkqeysggrqhxizkdmbhx.supabase.co"
 
 // MQTT
-#define MQTT_BROKER "43.217.242.221"
+#define MQTT_BROKER "broker.emqx.io"
 #define MQTT_PORT 1883
 
 // Hardware Pins (ECM50-A)
@@ -90,7 +90,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.1.6"
+#define FIRMWARE_VERSION "1.1.7"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"
