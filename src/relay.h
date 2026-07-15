@@ -9,4 +9,5 @@
 void writeRelay(uint8_t num, bool state);
 void checkRelayTimers();
 void checkSchedules();
+void checkRefillCutoff();
 void handleSerialCommands();

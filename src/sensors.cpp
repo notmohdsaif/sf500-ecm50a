@@ -383,6 +383,8 @@ void readSensors()
     sensorsObj["amb"]  = ambSensorFound;
     sensorsObj["rain"] = rainSensorFound;
 
+    doc["rescan_seq"] = rescanSeq;
+
     char buf[896];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);

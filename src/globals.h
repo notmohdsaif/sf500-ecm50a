@@ -91,10 +91,16 @@ extern String mqttTopicData;
 extern String topicRelayUpdate;
 extern String topicRelayStatus;
 extern String topicWifiCmd;
+extern String topicDeviceCmd;
 
 // Pending WiFi commands (set in callback, executed in loop to avoid re-entrancy)
 extern bool pendingWifiForget;
 extern bool pendingWifiPortal;
+
+// Pending sensor rescan (set in callback, executed in loop to avoid re-entrancy)
+extern bool pendingRescan;
+extern uint32_t rescanSeq; // increments each time a rescan actually completes — lets the
+                            // dashboard detect completion even when the result is unchanged
 
 // Sensor state
 extern uint8_t    ecSensorId;
@@ -119,6 +125,8 @@ extern bool          tasmotaPlugEnabled;
 extern bool          r3State;
 extern unsigned long r3Timer;
 extern unsigned int  r3Duration;
+extern String        plugMode;         // "refill" | "fertigate" | "custom"
+extern float          refillCutoffMm;  // 0 until fetched; guard with > 0 before use
 
 // EC automation — config
 extern bool          autoDosing;

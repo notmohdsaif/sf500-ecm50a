@@ -63,6 +63,9 @@
 #define EC_CEILING_HOLD_TIMEOUT (30UL * 60UL * 1000UL) // 30 min sustained ceiling hold → alarm
 #define EC_CEILING_LOG_INTERVAL  (5UL * 60UL * 1000UL) // 5 min minimum between ceiling-hold log entries
 
+#define REFILL_CUTOFF_PCT 0.95f       // Refill mode: stop R3 once WL reaches this fraction of tank max
+#define FERTIGATE_EC_TOLERANCE 0.10f  // Fertigate mode: block R3 unless |EC - ec_target| is within this
+
 // Smart Dosing
 #define SMART_CAL_DURATION 60        // calibration dose length (seconds) — floor only; scales with dosingTime
 #define SMART_MIN_DOSE 5             // minimum computed dose (seconds)
@@ -87,7 +90,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.1.6"
+#define FIRMWARE_VERSION "1.1.7"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

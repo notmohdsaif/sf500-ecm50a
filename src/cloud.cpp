@@ -113,7 +113,7 @@ void registerDevice()
 
 void uploadSensorConfig()
 {
-  if (!ecSensorFound && !wlSensorFound)
+  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
     return;
 
   HTTPClient http;
@@ -166,7 +166,7 @@ void uploadSensorConfig()
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.addHeader("Prefer", "return=representation");
-  http.setTimeout(15000);
+  http.setTimeout(3000);   // can run outside boot (e.g. rescan) — keep well under MQTT keepalive
 
   int code = http.PATCH(payload);
   http.end();
@@ -187,6 +187,7 @@ void uploadSensorReadings()
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
   DynamicJsonDocument doc(768);
+  if (doc.capacity() == 0) { LOGLN("[UPLOAD] JSON alloc failed (low heap)"); return; }
   JsonArray arr = doc.to<JsonArray>();
 
   if (ecSensorFound)
@@ -280,8 +281,20 @@ void updateDeviceStatus(const char *status)
   if (!http.begin(secureClient, url))
     return;
 
-  StaticJsonDocument<64> doc;
+  StaticJsonDocument<128> doc;
   doc["status"] = status;
+
+  time_t now = time(nullptr);
+  if (now > 1000000000)   // only include once NTP has synced
+  {
+    struct tm ti;
+    localtime_r(&now, &ti);
+    char ts[30];
+    sprintf(ts, "%04d-%02d-%02dT%02d:%02d:%02d+08:00",
+            ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+            ti.tm_hour, ti.tm_min, ti.tm_sec);
+    doc["last_heartbeat_at"] = ts;
+  }
 
   String payload;
   serializeJson(doc, payload);
@@ -295,6 +308,47 @@ void updateDeviceStatus(const char *status)
 }
 
 // =====================================================
+// FETCH REFILL TANK MAX — only queried while plugMode == "refill"
+// =====================================================
+
+static void fetchRefillTankMax()
+{
+  if (!wlSensorFound) return;
+
+  char sensorId[8];
+  sprintf(sensorId, "wl_%02d", wlSensorId);
+
+  HTTPClient http;
+  String url = String(SUPABASE_URL) +
+               "/rest/v1/sensor_config?device=eq." + deviceName +
+               "&sensor_id=eq." + sensorId + "&select=max_thres";
+
+  if (!http.begin(secureClient, url))
+    return;
+
+  http.addHeader("apikey", SUPABASE_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+  http.setTimeout(6000);
+
+  int code = http.GET();
+  if (code != 200) { http.end(); return; }
+
+  String response = http.getString();
+  http.end();
+
+  StaticJsonDocument<128> doc;
+  if (deserializeJson(doc, response) != DeserializationError::Ok) return;
+  if (doc.size() == 0) return;
+
+  if (!doc[0]["max_thres"].isNull())
+  {
+    float tankMax = doc[0]["max_thres"];
+    refillCutoffMm = tankMax * REFILL_CUTOFF_PCT;
+    LOGF("[CONFIG] Refill cutoff: %.0fmm (%.0f%% of %.0fmm tank)\n", refillCutoffMm, REFILL_CUTOFF_PCT * 100, tankMax);
+  }
+}
+
+// =====================================================
 // DEVICE CONFIG FETCH
 // =====================================================
 
@@ -303,7 +357,7 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode";
 
   if (!http.begin(secureClient, url))
     return;
@@ -435,6 +489,21 @@ void fetchDeviceConfig()
       tasmotaPlugTopic = newTopic;
     }
   }
+
+  if (!dev["tasmota_plug_mode"].isNull())
+  {
+    String newMode = dev["tasmota_plug_mode"].as<String>();
+    if (newMode != plugMode)
+    {
+      plugMode = newMode;
+      LOGLNS("[CONFIG] Smart Plug mode: " + plugMode);
+      if (plugMode != "refill")
+        refillCutoffMm = 0.0f;  // stale value must not linger if mode is switched away then back before a refetch
+    }
+  }
+
+  if (plugMode == "refill")
+    fetchRefillTankMax();
 }
 
 // =====================================================
@@ -527,6 +596,7 @@ void fetchSchedules()
   http.end();
 
   DynamicJsonDocument doc(4096);
+  if (doc.capacity() == 0) { LOGLN("[SCHEDULE] JSON alloc failed (low heap)"); return; }
   if (deserializeJson(doc, response) != DeserializationError::Ok)
     return;
 
@@ -608,7 +678,7 @@ void logDeviceActivity(const char *category, const char *action)
   http.addHeader("apikey",        SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.addHeader("Prefer",        "return=minimal");
-  http.setTimeout(10000);
+  http.setTimeout(3000);   // keep well under MQTT keepalive — this can run outside boot (e.g. rescan)
   http.POST(payload);
   http.end();
 }

@@ -6,6 +6,7 @@
 #include "mqtt_handler.h"
 #include "logger.h"
 #include "relay.h"    // writeRelay()
+#include "cloud.h"    // logDeviceActivity()
 #include <HTTPClient.h>
 
 // =====================================================
@@ -17,10 +18,11 @@ void reconnectMQTT()
   for (int i = 0; i < 5 && !mqttClient.connected(); i++)
   {
     String clientId = "SF500_" + lastSix;
-    if (mqttClient.connect(clientId.c_str()))
+    if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS))
     {
       mqttClient.subscribe(topicRelayUpdate.c_str());
       mqttClient.subscribe(topicWifiCmd.c_str());
+      mqttClient.subscribe(topicDeviceCmd.c_str());
       if (tasmotaPlugEnabled && tasmotaPlugTopic.length() > 0)
       {
         mqttClient.subscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
@@ -102,6 +104,26 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     return;
   }
 
+  // --- Device command handler (sensor rescan) ---
+  if (topicStr == topicDeviceCmd)
+  {
+    String msg;
+    for (unsigned int i = 0; i < length; i++)
+      msg += (char)payload[i];
+
+    StaticJsonDocument<64> doc;
+    if (deserializeJson(doc, msg) == DeserializationError::Ok)
+    {
+      String cmd = doc["cmd"].as<String>();
+      if (cmd == "rescan")
+      {
+        LOGLN("[Rescan] Command received");
+        pendingRescan = true;
+      }
+    }
+    return;
+  }
+
   if (topicStr != topicRelayUpdate)
     return;
 
@@ -153,7 +175,15 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     int val = doc["r3"];
     if (val == 0 || val == 1)
     {
-      if (val == 1 && duration > 0)
+      if (val == 1 && plugMode == "refill" && wlSensorFound && refillCutoffMm > 0.0f && sensors.wl >= refillCutoffMm)
+      {
+        logDeviceActivity("plug", "Refill blocked: water level already at 95%");
+      }
+      else if (val == 1 && plugMode == "fertigate" && ecSensorFound && fabs(sensors.ec - ecTarget) > FERTIGATE_EC_TOLERANCE)
+      {
+        logDeviceActivity("plug", "Fertigate blocked: EC out of range");
+      }
+      else if (val == 1 && duration > 0)
       {
         r3Duration = duration;
         r3Timer    = millis();
@@ -174,7 +204,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 // PUBLISH RELAY STATUS
 // =====================================================
 
-void publishRelayStatus()
+void publishRelayStatus(const char* r3Reason)
 {
   if (!mqttClient.connected())
     return;
@@ -183,6 +213,8 @@ void publishRelayStatus()
   doc["r1"] = relayStates[0] ? 1 : 0;
   doc["r2"] = relayStates[1] ? 1 : 0;
   doc["r3"] = r3State ? 1 : 0;
+  if (r3Reason != nullptr)
+    doc["r3_reason"] = r3Reason;
 
   unsigned long now = millis();
   unsigned long maxRemaining = 0;

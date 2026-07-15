@@ -11,6 +11,7 @@
 #include "sensors.h"
 #include "relay.h"
 #include "ota.h"
+#include <esp_task_wdt.h>
 
 // =====================================================
 // GLOBAL VARIABLE DEFINITIONS
@@ -40,8 +41,11 @@ String mqttTopicData;
 String topicRelayUpdate;
 String topicRelayStatus;
 String topicWifiCmd;
+String topicDeviceCmd;
 bool pendingWifiForget = false;
 bool pendingWifiPortal = false;
+bool pendingRescan = false;
+uint32_t rescanSeq = 0;
 
 uint8_t ecSensorId   = 0;
 uint8_t wlSensorId   = 0;
@@ -63,6 +67,8 @@ bool          tasmotaPlugEnabled = false;
 bool          r3State            = false;
 unsigned long r3Timer            = 0;
 unsigned int  r3Duration         = 0;
+String        plugMode           = "custom";
+float         refillCutoffMm     = 0.0f;
 
 bool autoDosing = false;
 bool autoMixing = false;
@@ -179,6 +185,7 @@ void setup()
   topicRelayUpdate = "sf500/" + lastSix + "/relay_update";
   topicRelayStatus = "sf500/" + lastSix + "/relay_status";
   topicWifiCmd     = "sf500/" + lastSix + "/wifi_cmd";
+  topicDeviceCmd   = "sf500/" + lastSix + "/device_cmd";
 #ifdef ENABLE_OTA_LOGS
   topicLogs        = "sf500/" + lastSix + "/logs";
 #endif
@@ -262,6 +269,11 @@ void setup()
       startupTime = millis();
     }
   }
+
+  // Watchdog: if loop() freezes for >60s, hard-reset the device.
+  // 60s covers worst-case WiFi reconnect (30s) + one blocking HTTP call (6s).
+  esp_task_wdt_init(60, true);
+  esp_task_wdt_add(NULL);
 }
 
 // =====================================================
@@ -271,6 +283,7 @@ void setup()
 void loop()
 {
   unsigned long now = millis();
+  esp_task_wdt_reset();
 
   checkRelayTimers();
   handleSerialCommands();
@@ -383,11 +396,36 @@ void loop()
     reconnectMQTT();
   mqttClient.loop();
 
+  // --- Pending sensor rescan (deferred from MQTT callback to avoid re-entrancy) ---
+  // Checked immediately after mqttClient.loop() (which is what actually sets the flag,
+  // via mqttCallback) rather than before it — otherwise a rescan command sits unhandled
+  // for a full extra loop() iteration, padded by whatever periodic task is due that tick.
+  if (pendingRescan)
+  {
+    pendingRescan = false;
+    bool busy = autoDosing &&
+                autoState != AUTO_IDLE &&
+                autoState != AUTO_STARTUP_WAIT &&
+                autoState != AUTO_SAMPLING;
+    if (!busy)
+    {
+      LOGLN("[Rescan] Running initSensors()");
+      initSensors();
+      uploadSensorConfig();
+      rescanSeq++;
+    }
+    else
+    {
+      LOGLN("[Rescan] Ignored — auto-dosing busy");
+    }
+  }
+
   // --- Periodic tasks ---
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
   {
     readSensors();
     lastSensorRead = now;
+    checkRefillCutoff();
     if (autoDosing && ecSensorFound)
       checkAutoDosing();
   }

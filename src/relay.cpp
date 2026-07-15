@@ -114,6 +114,25 @@ void checkRelayTimers()
 }
 
 // =====================================================
+// REFILL AUTO-CUTOFF — stops R3 the instant WL reaches the Refill threshold
+// Runs every 1s from loop(), right after readSensors() refreshes sensors.wl.
+// =====================================================
+
+void checkRefillCutoff()
+{
+  if (!r3State) return;
+  if (plugMode != "refill") return;
+  if (!wlSensorFound || refillCutoffMm <= 0.0f) return;
+  if (sensors.wl < refillCutoffMm) return;
+
+  writePlugRelay(false);
+  r3Duration = 0;
+  r3Timer    = 0;
+  logDeviceActivity("plug", "Refill stopped: water level reached 95%");
+  publishRelayStatus("refill_complete");
+}
+
+// =====================================================
 // SCHEDULE CHECK — triggers relay at configured time
 // Bug fix: marker uses month+day+hour+min (no year) to avoid uint32 overflow
 // =====================================================
@@ -150,6 +169,23 @@ void checkSchedules()
     if (sch.relayNum == 3)
     {
       if (!tasmotaPlugEnabled || r3Duration > 0) continue;
+
+      if (plugMode == "refill" && wlSensorFound && refillCutoffMm > 0.0f && sensors.wl >= refillCutoffMm)
+      {
+        lastTriggeredTime[i] = (unsigned long)marker;
+        logDeviceActivity("schedule", "Skipped Refill: water level already at 95%");
+        continue;
+      }
+
+      if (plugMode == "fertigate" && ecSensorFound && fabs(sensors.ec - ecTarget) > FERTIGATE_EC_TOLERANCE)
+      {
+        lastTriggeredTime[i] = (unsigned long)marker;
+        char msg[80];
+        snprintf(msg, sizeof(msg), "Skip fertigation due to EC out of range (EC: %.2f mS/cm)", sensors.ec);
+        logDeviceActivity("schedule", msg);
+        continue;
+      }
+
       LOGLNS("\n[SCHEDULE] " + sch.name);
       LOGF("  R3 (Plug) ON for %ds\n", sch.duration);
       lastTriggeredTime[i] = (unsigned long)marker;
