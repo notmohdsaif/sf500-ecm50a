@@ -57,6 +57,8 @@
 // EC Automation — thresholds
 #define EC_SAMPLES 30
 #define EC_HYSTERESIS 0.10f
+#define EC_MIN_PLAUSIBLE 0.05f // below this, a live nutrient tank can't legitimately read — treat as sensor/Modbus fault, not real EC
+#define EC_IMPLAUSIBLE_CONFIRM_MS (120UL * 1000UL) // sustained below-floor readings this long are trusted as real (e.g. a genuine plain-water refill), not a fault
 #define EC_CEILING_MARGIN 0.30f
 #define DOSE_RESPONSE_THRESHOLD 0.02f
 #define MAX_INEFFECTIVE_DOSES 3
@@ -90,7 +92,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.1.7"
+#define FIRMWARE_VERSION "1.1.8"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

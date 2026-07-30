@@ -220,7 +220,11 @@ void checkRainDailyReset()
 
 void readSensors()
 {
-  bool success = false;
+  bool success  = false;
+  bool ecReadOk = false; // EC specifically produced a trustworthy value this tick —
+                         // gates the average/MQTT/upload paths instead of the shared
+                         // `success` flag above, which any other sensor can also set.
+  static unsigned long ecImplausibleSinceMs = 0; // 0 = not currently in a below-floor streak
 
   // --- EC Sensor ---
   if (ecSensorFound)
@@ -235,9 +239,57 @@ void readSensors()
       uint16_t r2 = modbus.getResponseBuffer(2);
 
       uint32_t ecRaw = ((uint32_t)r0 << 16) | r1;
-      sensors.ec   = ecRaw / 100000.0f;
-      sensors.temp = r2 / 10.0f;
-      success = true;
+      float ecCandidate = ecRaw / 100000.0f;
+      unsigned long nowMs = millis();
+
+      // Reject implausible reads instead of trusting them — a Modbus/probe
+      // fault can ACK with a valid CRC while the register itself decodes to
+      // ~0 for many consecutive seconds. Left unfiltered, that pollutes the
+      // rolling average enough to fire a real (but unwarranted) auto-dose,
+      // and separately gets uploaded raw to sensor_metrics where it fires a
+      // false ec_low alarm. Keep the last known-good value instead.
+      bool plausible = ecCandidate >= EC_MIN_PLAUSIBLE;
+
+      // ...but don't reject forever. A genuine plain-water refill can leave
+      // real EC below the floor for as long as the tank stays diluted — if a
+      // below-floor reading is sustained past EC_IMPLAUSIBLE_CONFIRM_MS (well
+      // beyond any glitch seen in practice, well short of a real dilution's
+      // multi-minute timescale), trust it as real instead of freezing auto-
+      // dosing decisions on stale pre-event data forever.
+      if (!plausible && ecImplausibleSinceMs != 0 &&
+          (nowMs - ecImplausibleSinceMs) >= EC_IMPLAUSIBLE_CONFIRM_MS)
+      {
+        plausible = true;
+        ecReadingCount = 0; // restart the average from this new baseline
+        ecReadingIndex = 0; // instead of slowly blending in stale pre-event samples
+        LOGF("[EC] Sustained low reading confirmed real after %lus — accepting %.3f mS/cm\n",
+             EC_IMPLAUSIBLE_CONFIRM_MS / 1000UL, ecCandidate);
+        logDeviceActivity("system", ("EC sustained low confirmed real: " +
+                          String(ecCandidate, 3) + " mS/cm").c_str());
+      }
+
+      if (plausible)
+      {
+        sensors.ec   = ecCandidate;
+        sensors.temp = r2 / 10.0f;
+        success  = true;
+        ecReadOk = true;
+        ecImplausibleSinceMs = 0;
+      }
+      else
+      {
+        if (ecImplausibleSinceMs == 0) ecImplausibleSinceMs = nowMs;
+
+        static unsigned long lastImplausibleLogMs = 0;
+        if (nowMs - lastImplausibleLogMs >= 60000UL)
+        {
+          LOGF("[EC] Rejected implausible reading: %.3f mS/cm (< %.2f floor)\n",
+               ecCandidate, EC_MIN_PLAUSIBLE);
+          logDeviceActivity("system", ("EC reading rejected: " + String(ecCandidate, 3) +
+                            " mS/cm implausible — sensor/wiring fault?").c_str());
+          lastImplausibleLogMs = nowMs;
+        }
+      }
     }
     delay(50);
   }
@@ -312,7 +364,7 @@ void readSensors()
 
     if (success)
     {
-      if (ecSensorFound)
+      if (ecReadOk)
       {
         doc["ec"]   = sensors.ec;
         doc["temp"] = sensors.temp;
@@ -391,7 +443,7 @@ void readSensors()
   }
 
   // Only add to rolling average when R1 is NOT dosing and not in stabilising skip window
-  if (success && ecSensorFound && !relayStates[0])
+  if (ecReadOk && !relayStates[0])
   {
     if (autoState == AUTO_STABILISING)
       tickStabiliseSkip(); // count skipped readings, don't add to average
