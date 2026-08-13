@@ -495,6 +495,12 @@ static unsigned long ceilingHoldStart    = 0;    // millis() when ceiling hold b
 static unsigned long lastCeilingLogMs    = 0;    // millis() of last ceiling-hold log entry
 static float         lastLoggedCeilingEc = -1.0f; // ecAverage at last ceiling-hold log entry
 
+// True if the R3 refill relay was ON at any point since the current dose's preDoseEC was
+// captured. A scheduled/manual refill dilutes the tank while dosing runs, so the EC rise
+// measured at STABILISING is not attributable to the dose — skip response-check accounting
+// for that cycle instead of counting it as a failed dose. Reset when a new dose is triggered.
+static bool refillActiveDuringDose = false;
+
 static void enterState(AutoDosingState next)
 {
   autoState          = next;
@@ -527,6 +533,12 @@ void checkAutoDosing()
 
   if (!ecSensorFound)
     return;
+
+  // Track refill activity across the whole dose cycle (PRE_MIX..STABILISING), not just
+  // at the instant of the response check — a refill that toggles off before STABILISING
+  // still diluted the tank during dosing.
+  if (r3State)
+    refillActiveDuringDose = true;
 
   switch (autoState)
   {
@@ -627,6 +639,7 @@ void checkAutoDosing()
 
       // EC below threshold — prepare to dose
       preDoseEC = ecAverage;
+      refillActiveDuringDose = r3State; // start this cycle's window fresh
 
       // Determine dose duration
       unsigned int thisDoseTime = dosingTime;
@@ -865,6 +878,19 @@ void checkAutoDosing()
         float ecRise = ecAverage - preDoseEC;
         LOGF("[Auto] Response check: pre=%.3f now=%.3f rise=%.3f\n",
              preDoseEC, ecAverage, ecRise);
+
+        // Refill (R3) ran during this dose cycle — incoming fresh water dilutes the tank
+        // independently of the dose, so ecRise doesn't reflect the dose's true effect.
+        // Don't count it toward consecutiveIneffectiveDoses either way; just re-sample
+        // once the tank has settled.
+        if (refillActiveDuringDose)
+        {
+          LOGLN("[Auto] Response check skipped — refill (R3) active during dose cycle");
+          logDeviceActivity("dosing", "Dose response check skipped — refill active during cycle");
+          enterState(AUTO_SAMPLING);
+          LOGLN("[Auto] Back to SAMPLING");
+          break;
+        }
 
         // P8: save before the block clears it — needed to guard ineffective dose counter below
         bool wasCalPhase = smartCalPhase;

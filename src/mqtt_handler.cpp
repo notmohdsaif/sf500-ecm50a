@@ -74,7 +74,35 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     for (unsigned int i = 0; i < length; i++)
       msg += (char)payload[i];
     msg.toUpperCase();
-    r3State = (msg == "ON" || msg == "1");
+    bool newR3State = (msg == "ON" || msg == "1");
+
+    // Log to relay_metrics only on an actual transition — this status topic also fires
+    // on every reconnect poll (see reconnectMQTT), which would otherwise duplicate-log
+    // the same unchanged state on every reconnect. writePlugRelay() only logs R3 changes
+    // it commands itself; this is the only place an externally-driven change (Tasmota's
+    // own rule/timer, or someone toggling the plug outside this dashboard) gets captured.
+    if (newR3State != r3State && WiFi.status() == WL_CONNECTED)
+    {
+      HTTPClient http;
+      String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
+      if (http.begin(secureClient, url))
+      {
+        StaticJsonDocument<128> logDoc;
+        logDoc["device"]   = deviceName;
+        logDoc["relay_id"] = "relay_03";
+        logDoc["status"]   = newR3State ? 1 : 0;
+        String postPayload;
+        serializeJson(logDoc, postPayload);
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("apikey", SUPABASE_KEY);
+        http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+        http.setTimeout(4000);
+        http.POST(postPayload);
+        http.end();
+      }
+    }
+
+    r3State = newR3State;
     publishRelayStatus();
     return;
   }
