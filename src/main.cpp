@@ -422,6 +422,23 @@ void loop()
     }
   }
 
+  // --- Pending auto-dosing alarm reset (deferred from MQTT callback to avoid re-entrancy) ---
+  if (pendingAutoDosingReset)
+  {
+    pendingAutoDosingReset = false;
+    if (autoState == AUTO_ALARM)
+    {
+      LOGLN("[Auto] Reset via dashboard command");
+      logDeviceActivity("dosing", "Auto-dosing alarm reset via dashboard");
+      autoState = AUTO_IDLE;
+      lastAlarmReason = ALARM_REASON_NONE;
+    }
+    else
+    {
+      LOGLN("[Auto] Reset command ignored — not in ALARM");
+    }
+  }
+
   // --- Periodic tasks ---
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
   {
