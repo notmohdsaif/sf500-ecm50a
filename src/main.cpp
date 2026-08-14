@@ -45,6 +45,7 @@ String topicDeviceCmd;
 bool pendingWifiForget = false;
 bool pendingWifiPortal = false;
 bool pendingRescan = false;
+bool pendingAutoDosingReset = false;
 uint32_t rescanSeq = 0;
 
 uint8_t ecSensorId   = 0;
@@ -418,6 +419,23 @@ void loop()
     else
     {
       LOGLN("[Rescan] Ignored — auto-dosing busy");
+    }
+  }
+
+  // --- Pending auto-dosing alarm reset (deferred from MQTT callback to avoid re-entrancy) ---
+  if (pendingAutoDosingReset)
+  {
+    pendingAutoDosingReset = false;
+    if (autoState == AUTO_ALARM)
+    {
+      LOGLN("[Auto] Reset via dashboard command");
+      logDeviceActivity("dosing", "Auto-dosing alarm reset via dashboard");
+      autoState = AUTO_IDLE;
+      lastAlarmReason = ALARM_REASON_NONE;
+    }
+    else
+    {
+      LOGLN("[Auto] Reset command ignored — not in ALARM");
     }
   }
 
