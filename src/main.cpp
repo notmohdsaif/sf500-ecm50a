@@ -92,6 +92,7 @@ int ecReadingCount = 0;
 float ecAverage = 0.0f;
 
 AutoDosingState autoState                = AUTO_IDLE;
+AutoDosingAlarmReason lastAlarmReason    = ALARM_REASON_NONE;
 unsigned long   autoStateEnteredAt       = 0;
 float           preDoseEC                = 0.0f;
 int             consecutiveIneffectiveDoses = 0;

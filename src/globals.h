@@ -166,6 +166,17 @@ enum AutoDosingState {
   AUTO_ALARM
 };
 extern AutoDosingState autoState;
+
+// Which condition put the state machine into AUTO_ALARM — needed so the
+// refill-completion auto-reset (checkAutoDosing) can tell "No EC response"
+// apart from the other two AUTO_ALARM causes, which it must leave alone.
+enum AutoDosingAlarmReason {
+  ALARM_REASON_NONE,
+  ALARM_REASON_NO_EC_RESPONSE,
+  ALARM_REASON_EC_CEILING,
+  ALARM_REASON_SMART_CAL_FAILED
+};
+extern AutoDosingAlarmReason lastAlarmReason;
 extern unsigned long   autoStateEnteredAt;
 extern float           preDoseEC;
 extern int             consecutiveIneffectiveDoses;
