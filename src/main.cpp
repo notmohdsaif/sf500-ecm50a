@@ -45,6 +45,7 @@ String topicDeviceCmd;
 bool pendingWifiForget = false;
 bool pendingWifiPortal = false;
 bool pendingRescan = false;
+bool pendingAutoDosingReset = false;
 uint32_t rescanSeq = 0;
 
 uint8_t ecSensorId   = 0;

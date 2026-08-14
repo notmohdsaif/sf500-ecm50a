@@ -99,6 +99,9 @@ extern bool pendingWifiPortal;
 
 // Pending sensor rescan (set in callback, executed in loop to avoid re-entrancy)
 extern bool pendingRescan;
+
+// Pending auto-dosing alarm reset (set in callback, executed in loop to avoid re-entrancy)
+extern bool pendingAutoDosingReset;
 extern uint32_t rescanSeq; // increments each time a rescan actually completes — lets the
                             // dashboard detect completion even when the result is unchanged
 
