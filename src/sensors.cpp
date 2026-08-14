@@ -501,19 +501,34 @@ static float         lastLoggedCeilingEc = -1.0f; // ecAverage at last ceiling-h
 // for that cycle instead of counting it as a failed dose. Reset when a new dose is triggered.
 static bool refillActiveDuringDose = false;
 
+// EC at the start of the current consecutive-ineffective-dose streak. A dose landing just
+// under DOSE_RESPONSE_THRESHOLD doesn't necessarily mean the pump has stopped working — near
+// target, each dose's individual rise naturally shrinks. Comparing against the streak's start
+// (not just the immediately preceding dose) tells "genuinely flat, 3 doses running" apart from
+// "still climbing, just slowly" before alarming. Set whenever consecutiveIneffectiveDoses goes
+// 0 -> 1; only meaningful while a streak is active.
+static float ecAtStreakStart = 0.0f;
+
+// Total ineffective doses since the last genuinely effective one — unlike
+// consecutiveIneffectiveDoses, this is NOT cleared by a streak-cumulative
+// reset. Caps how long a series of near-threshold (possibly noise-driven)
+// doses can keep deferring the alarm via MAX_TOTAL_INEFFECTIVE_DOSES.
+static int totalIneffectiveDoses = 0;
+
 static void enterState(AutoDosingState next)
 {
   autoState          = next;
   autoStateEnteredAt = millis();
 }
 
-static void triggerAlarm(const String& reason)
+static void triggerAlarm(const String& reason, AutoDosingAlarmReason reasonCode)
 {
   LOGLNS("\n[Auto] ALARM: " + reason);
   // Do NOT set autoDosing = false here — the config fetch would re-enable it automatically.
   // Instead, block all activity via AUTO_ALARM state; user must toggle off→on to reset.
   writeRelay(1, false);
   writeRelay(2, false);
+  lastAlarmReason = reasonCode;
   enterState(AUTO_ALARM);
   String msg = "Auto-dosing alarm: " + reason;
   logDeviceActivity("alarm", msg.c_str());
@@ -540,6 +555,57 @@ void checkAutoDosing()
   if (r3State)
     refillActiveDuringDose = true;
 
+  // Auto-recovery: if a refill just finished (R3 went ON->OFF — either an
+  // ESP32-commanded stop or the Tasmota plug's own status broadcast, both of
+  // which update r3State) and the tank settled above the dosing minimum,
+  // clear a "No EC response" AUTO_ALARM automatically instead of requiring a
+  // manual toggle. The other two AUTO_ALARM reasons (EC ceiling-hold, smart
+  // calibration failed) are left alone — a refill doesn't address either.
+  static bool          prevR3State        = false;
+  static bool          refillResetPending = false;
+  static unsigned long refillOffAtMs      = 0;
+
+  // Only arm on a genuine refill: plugMode "fertigate"/"custom" also drive R3
+  // off for reasons that have nothing to do with topping up the tank, and
+  // shouldn't be able to clear a real "pump isn't responding" alarm just
+  // because WL happens to already be above the dosing minimum.
+  if (prevR3State && !r3State && plugMode == "refill")
+  {
+    refillResetPending = true;
+    refillOffAtMs      = now;
+  }
+  else if (r3State)
+  {
+    // Refill resumed before the settle window elapsed (another pulse in a
+    // multi-stage refill) — wait for the next OFF edge instead.
+    refillResetPending = false;
+  }
+  prevR3State = r3State;
+
+  if (refillResetPending && (now - refillOffAtMs >= REFILL_RESET_DELAY))
+  {
+    if (autoState != AUTO_ALARM || lastAlarmReason != ALARM_REASON_NO_EC_RESPONSE)
+    {
+      refillResetPending = false; // nothing to recover from
+    }
+    else
+    {
+      bool wlOk = !wlSensorFound || minWlDosing == 0 ||
+                  (unsigned int)sensors.wl > minWlDosing;
+      if (wlOk)
+      {
+        refillResetPending = false;
+        LOGLN("[Auto] Refill completed, WL above minimum — resetting from ALARM");
+        logDeviceActivity("dosing", "Auto-dosing reset: refill completed, WL above minimum");
+        lastAlarmReason = ALARM_REASON_NONE;
+        enterState(AUTO_IDLE);
+      }
+      // else: WL hasn't settled above the minimum yet — keep retrying every
+      // tick until it does, or until R3 turns back on (which cancels this
+      // pending reset above).
+    }
+  }
+
   switch (autoState)
   {
     // -------------------------------------------------
@@ -547,8 +613,10 @@ void checkAutoDosing()
       ecReadingCount = 0;
       ecReadingIndex = 0;
       consecutiveIneffectiveDoses = 0;
+      totalIneffectiveDoses = 0;
       stabiliseSkipCount = 0;
       calRetryCount = 0;
+      lastAlarmReason = ALARM_REASON_NONE;
       // Reset ceiling-hold timer — ec_target or autoDosing may have changed,
       // so the new cycle gets a fresh 30-min window from scratch.
       ceilingHoldStart    = 0;
@@ -599,7 +667,8 @@ void checkAutoDosing()
           triggerAlarm("EC above ceiling for " +
                        String(EC_CEILING_HOLD_TIMEOUT / 60000UL) + "+ min (" +
                        String(ecAverage, 2) + " > " +
-                       String(ecTarget + EC_CEILING_MARGIN, 2) + ")");
+                       String(ecTarget + EC_CEILING_MARGIN, 2) + ")",
+                       ALARM_REASON_EC_CEILING);
           ceilingHoldStart    = 0;
           lastCeilingLogMs    = 0;
           lastLoggedCeilingEc = -1.0f;
@@ -926,7 +995,8 @@ void checkAutoDosing()
                  calRetryCount, SMART_CAL_MAX_RETRIES);
             if (calRetryCount >= SMART_CAL_MAX_RETRIES)
             {
-              triggerAlarm("Smart calibration failed after " + String(calRetryCount) + " attempts");
+              triggerAlarm("Smart calibration failed after " + String(calRetryCount) + " attempts",
+                           ALARM_REASON_SMART_CAL_FAILED);
               return;
             }
           }
@@ -963,18 +1033,54 @@ void checkAutoDosing()
         {
           if (!wasCalPhase)
           {
+            if (consecutiveIneffectiveDoses == 0)
+              ecAtStreakStart = preDoseEC; // mark this streak's baseline
+
             consecutiveIneffectiveDoses++;
-            LOGF("[Auto] Ineffective dose #%d\n", consecutiveIneffectiveDoses);
+            totalIneffectiveDoses++;
+            LOGF("[Auto] Ineffective dose #%d (total %d)\n",
+                 consecutiveIneffectiveDoses, totalIneffectiveDoses);
+
+            // Hard ceiling — independent of the streak-cumulative check below.
+            // Caps how long a run of individually-marginal doses (possibly just
+            // EC probe noise, not real progress) can keep deferring the alarm.
+            if (totalIneffectiveDoses >= MAX_TOTAL_INEFFECTIVE_DOSES)
+            {
+              triggerAlarm("No EC response after " + String(totalIneffectiveDoses) +
+                           " doses (total)", ALARM_REASON_NO_EC_RESPONSE);
+              return;
+            }
+
             if (consecutiveIneffectiveDoses >= MAX_INEFFECTIVE_DOSES)
             {
-              triggerAlarm("No EC response after " + String(MAX_INEFFECTIVE_DOSES) + " doses");
-              return;
+              // Individually marginal doses can still add up to real progress near
+              // target (diminishing returns), which isn't the same as the pump
+              // genuinely not responding. Check the streak as a whole before alarming.
+              float streakRise = ecAverage - ecAtStreakStart;
+              if (streakRise >= DOSE_RESPONSE_THRESHOLD)
+              {
+                LOGF("[Auto] Ineffective streak reset — cumulative rise %.3f over %d doses\n",
+                     streakRise, consecutiveIneffectiveDoses);
+                logDeviceActivity("dosing", ("Ineffective-dose streak reset: cumulative rise " +
+                                  String(streakRise, 3) + " mS/cm over " +
+                                  String(consecutiveIneffectiveDoses) + " doses").c_str());
+                consecutiveIneffectiveDoses = 0; // totalIneffectiveDoses keeps accumulating
+              }
+              else
+              {
+                triggerAlarm("No EC response after " + String(MAX_INEFFECTIVE_DOSES) + " doses",
+                             ALARM_REASON_NO_EC_RESPONSE);
+                return;
+              }
             }
           }
         }
         else
         {
-          consecutiveIneffectiveDoses = 0;  // any successful dose (cal or production) resets counter
+          // Any genuinely effective dose (cal or production) clears both counters —
+          // real progress means the pump is demonstrably working.
+          consecutiveIneffectiveDoses = 0;
+          totalIneffectiveDoses       = 0;
         }
 
         enterState(AUTO_SAMPLING);
