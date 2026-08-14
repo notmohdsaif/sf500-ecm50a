@@ -132,7 +132,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     return;
   }
 
-  // --- Device command handler (sensor rescan) ---
+  // --- Device command handler (sensor rescan, auto-dosing alarm reset) ---
   if (topicStr == topicDeviceCmd)
   {
     String msg;
@@ -147,6 +147,11 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       {
         LOGLN("[Rescan] Command received");
         pendingRescan = true;
+      }
+      else if (cmd == "reset_auto_dosing")
+      {
+        LOGLN("[Auto] Reset command received");
+        pendingAutoDosingReset = true;
       }
     }
     return;
