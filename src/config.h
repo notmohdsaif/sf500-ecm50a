@@ -71,6 +71,10 @@
 #define FERTIGATE_EC_TOLERANCE 0.10f  // Fertigate mode: block R3 unless |EC - ec_target| is within this
 #define REFILL_RESET_DELAY 15000UL    // Settle time after R3 turns off before re-checking WL for the
                                        // AUTO_ALARM refill-recovery reset (checkAutoDosing)
+#define WL_JUMP_THRESHOLD_MM 10        // WL rise (mm) since baseline that counts as "water was added" —
+                                       // plug-independent refill signal for sites with no Tasmota plug (or a
+                                       // manual top-up at a plug site). Validated against production data:
+                                       // real refills move WL 29-440mm; a single dose moves it ~0.2mm.
 
 // Smart Dosing
 #define SMART_CAL_DURATION 60        // calibration dose length (seconds) — floor only; scales with dosingTime
@@ -96,7 +100,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.2.1"
+#define FIRMWARE_VERSION "1.2.2"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

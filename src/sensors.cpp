@@ -501,6 +501,14 @@ static float         lastLoggedCeilingEc = -1.0f; // ecAverage at last ceiling-h
 // for that cycle instead of counting it as a failed dose. Reset when a new dose is triggered.
 static bool refillActiveDuringDose = false;
 
+// WL baseline captured alongside preDoseEC (start of the current dose cycle) and, separately,
+// the moment AUTO_ALARM is entered. A rise of WL_JUMP_THRESHOLD_MM or more since either baseline
+// is a plug-independent "water was added" signal — mirrors what r3State tells us on plug sites,
+// but works from the WL sensor alone, so it also covers sites with no Tasmota plug at all (and
+// catches a manual top-up even on a plug site). See config.h for the threshold and its rationale.
+static float wlAtCycleStart  = 0.0f;
+static float wlAtAlarmEntry  = 0.0f;
+
 // EC at the start of the current consecutive-ineffective-dose streak. A dose landing just
 // under DOSE_RESPONSE_THRESHOLD doesn't necessarily mean the pump has stopped working — near
 // target, each dose's individual rise naturally shrinks. Comparing against the streak's start
@@ -529,6 +537,7 @@ static void triggerAlarm(const String& reason, AutoDosingAlarmReason reasonCode)
   writeRelay(1, false);
   writeRelay(2, false);
   lastAlarmReason = reasonCode;
+  wlAtAlarmEntry   = sensors.wl; // baseline for the WL-jump auto-recovery check below
   enterState(AUTO_ALARM);
   String msg = "Auto-dosing alarm: " + reason;
   logDeviceActivity("alarm", msg.c_str());
@@ -604,6 +613,21 @@ void checkAutoDosing()
       // tick until it does, or until R3 turns back on (which cancels this
       // pending reset above).
     }
+  }
+
+  // Plug-independent auto-recovery: same "No EC response" reset as above, but keyed off a WL
+  // rise instead of an R3 edge — covers sites with no Tasmota plug at all (or a manual top-up
+  // at a plug site the plug never saw). No settle delay needed: unlike R3, there's no relay
+  // bounce to debounce, and AUTO_ALARM already forces both relays off, so nothing but a real
+  // top-up can move WL while we're checking.
+  if (wlSensorFound && autoState == AUTO_ALARM && lastAlarmReason == ALARM_REASON_NO_EC_RESPONSE &&
+      (sensors.wl - wlAtAlarmEntry) >= WL_JUMP_THRESHOLD_MM &&
+      (minWlDosing == 0 || (unsigned int)sensors.wl > minWlDosing))
+  {
+    LOGLN("[Auto] WL jump detected post-alarm, WL above minimum — resetting from ALARM");
+    logDeviceActivity("dosing", "Auto-dosing reset: WL jump detected, WL above minimum");
+    lastAlarmReason = ALARM_REASON_NONE;
+    enterState(AUTO_IDLE);
   }
 
   switch (autoState)
@@ -709,6 +733,7 @@ void checkAutoDosing()
       // EC below threshold — prepare to dose
       preDoseEC = ecAverage;
       refillActiveDuringDose = r3State; // start this cycle's window fresh
+      wlAtCycleStart = sensors.wl;      // baseline for this cycle's WL-jump check
 
       // Determine dose duration
       unsigned int thisDoseTime = dosingTime;
@@ -948,13 +973,17 @@ void checkAutoDosing()
         LOGF("[Auto] Response check: pre=%.3f now=%.3f rise=%.3f\n",
              preDoseEC, ecAverage, ecRise);
 
-        // Refill (R3) ran during this dose cycle — incoming fresh water dilutes the tank
+        // Refill ran during this dose cycle — incoming fresh water dilutes the tank
         // independently of the dose, so ecRise doesn't reflect the dose's true effect.
         // Don't count it toward consecutiveIneffectiveDoses either way; just re-sample
-        // once the tank has settled.
-        if (refillActiveDuringDose)
+        // once the tank has settled. Detected via R3 (plug sites) or a WL rise since
+        // wlAtCycleStart (any site with a WL sensor — see config.h WL_JUMP_THRESHOLD_MM).
+        bool wlJumpDuringDose = wlSensorFound &&
+                                (sensors.wl - wlAtCycleStart) >= WL_JUMP_THRESHOLD_MM;
+        if (refillActiveDuringDose || wlJumpDuringDose)
         {
-          LOGLN("[Auto] Response check skipped — refill (R3) active during dose cycle");
+          LOGF("[Auto] Response check skipped — refill active during dose cycle (R3=%d, WL jump=%d)\n",
+               refillActiveDuringDose, wlJumpDuringDose);
           logDeviceActivity("dosing", "Dose response check skipped — refill active during cycle");
           enterState(AUTO_SAMPLING);
           LOGLN("[Auto] Back to SAMPLING");
