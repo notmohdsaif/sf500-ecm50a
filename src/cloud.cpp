@@ -90,9 +90,12 @@ void registerDevice()
       http.addHeader("Content-Type", "application/json");
       http.addHeader("apikey", SUPABASE_KEY);
       http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-      http.addHeader("Prefer", "return=representation,resolution=merge-duplicates");
+      http.addHeader("Prefer", "return=representation");
 
       code = http.POST(payload);
+      LOGF("[REG] POST code: %d\n", code);
+      if (code != 200 && code != 201 && code != 409)
+        LOGLNS("[REG] POST failed: " + http.getString().substring(0, 120));
       isRegistered = (code == 200 || code == 201 || code == 409);
     }
     else
