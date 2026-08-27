@@ -360,7 +360,7 @@ void readSensors()
   // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
   if (mqttClient.connected())
   {
-    StaticJsonDocument<896> doc;
+    StaticJsonDocument<1024> doc;
 
     if (success)
     {
@@ -427,6 +427,15 @@ void readSensors()
       wifiObj["ip"]   = WiFi.localIP().toString();
     }
 
+    if (tasmotaPlugEnabled)
+    {
+      JsonObject plugObj   = doc.createNestedObject("plug");
+      plugObj["transport"] = plugUseHttp ? "http" : "mqtt";
+      plugObj["power"]     = r3State ? 1 : 0;
+      if (plugUseHttp)
+        plugObj["online"]  = plugHttpReachable;
+    }
+
     doc["fw"] = FIRMWARE_VERSION;
 
     JsonObject sensorsObj = doc.createNestedObject("sensors");
@@ -437,7 +446,7 @@ void readSensors()
 
     doc["rescan_seq"] = rescanSeq;
 
-    char buf[896];
+    char buf[1024];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }

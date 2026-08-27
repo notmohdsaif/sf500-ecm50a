@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <ESPmDNS.h>
 #include <PubSubClient.h>
 #include <ModbusMaster.h>
 #include <WebServer.h>
@@ -130,6 +131,17 @@ extern unsigned long r3Timer;
 extern unsigned int  r3Duration;
 extern String        plugMode;         // "refill" | "fertigate" | "custom"
 extern float          refillCutoffMm;  // 0 until fetched; guard with > 0 before use
+
+// Tasmota Plug — local HTTP transport (docs/plug-http-control.md)
+// Active when plugHttpHost is non-empty: controller drives the plug over its LAN
+// /cm API instead of MQTT. plugUseHttp is recomputed in fetchDeviceConfig().
+extern String        plugHttpHost;         // device_management.tasmota_plug_host; "" => MQTT transport
+extern bool          plugUseHttp;          // tasmotaPlugEnabled && plugHttpHost.length() > 0
+extern IPAddress     plugHttpHostIp;       // cached resolved address; IPAddress() until resolved
+extern unsigned long lastPlugHostResolve;
+extern bool          plugHttpReachable;    // debounced reachability -> plug.online in the data payload
+extern uint8_t       plugHttpFailStreak;   // consecutive failed polls
+extern unsigned long lastPlugHttpPoll;
 
 // EC automation — config
 extern bool          autoDosing;

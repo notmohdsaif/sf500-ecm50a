@@ -71,6 +71,14 @@ unsigned int  r3Duration         = 0;
 String        plugMode           = "custom";
 float         refillCutoffMm     = 0.0f;
 
+String        plugHttpHost        = "";
+bool          plugUseHttp         = false;
+IPAddress     plugHttpHostIp;                 // 0.0.0.0 until resolved
+unsigned long lastPlugHostResolve = 0;
+bool          plugHttpReachable   = false;
+uint8_t       plugHttpFailStreak  = 0;
+unsigned long lastPlugHttpPoll    = 0;
+
 bool autoDosing = false;
 bool autoMixing = false;
 float ecTarget = 1.5f;
@@ -478,6 +486,13 @@ void loop()
   {
     checkSchedules();
     lastScheduleCheck = now;
+  }
+
+  // --- Tasmota plug state poll (HTTP transport only; inert on MQTT-transport devices) ---
+  if (plugUseHttp && now - lastPlugHttpPoll >= PLUG_HTTP_POLL_INTERVAL)
+  {
+    pollPlugHttpState();
+    lastPlugHttpPoll = now;
   }
 
   if (now - lastOTACheck >= OTA_CHECK_INTERVAL)

@@ -76,6 +76,16 @@
                                        // manual top-up at a plug site). Validated against production data:
                                        // real refills move WL 29-440mm; a single dose moves it ~0.2mm.
 
+// Tasmota Plug (R3) — local HTTP transport
+// Used when device_management.tasmota_plug_host is set: the controller drives the
+// plug over its LAN /cm API instead of MQTT (for sites where the plug can't reach
+// the broker). See docs/plug-http-control.md.
+#define PLUG_HTTP_TIMEOUT_MS         2000UL   // TCP connect + read cap per call — stays well under MQTT keepalive
+#define PLUG_HTTP_POLL_INTERVAL      10000UL  // how often the controller re-reads the plug's Power state
+#define PLUG_HTTP_RETRY_DELAY_MS     300UL    // one immediate retry after a failed command GET
+#define PLUG_HOST_RERESOLVE_INTERVAL (5UL * 60UL * 1000UL) // re-resolve the mDNS/DNS name at most this often
+#define PLUG_OFFLINE_FAIL_STREAK     2        // consecutive failed polls before plug.online is reported false
+
 // Smart Dosing
 #define SMART_CAL_DURATION 60        // calibration dose length (seconds) — floor only; scales with dosingTime
 #define SMART_MIN_DOSE 5             // minimum computed dose (seconds)
@@ -100,7 +110,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.2.3"
+#define FIRMWARE_VERSION "1.2.4"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"
