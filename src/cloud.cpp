@@ -6,6 +6,7 @@
 #include "cloud.h"
 #include "logger.h"
 #include "relay.h"
+#include "mqtt_handler.h"
 #include <HTTPClient.h>
 
 // =====================================================
@@ -360,7 +361,7 @@ void fetchDeviceConfig()
   HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode,tasmota_plug_host";
 
   if (!http.begin(secureClient, url))
     return;
@@ -375,7 +376,7 @@ void fetchDeviceConfig()
   String response = http.getString();
   http.end();
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<768> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
   if (doc.size() == 0) return;
 
@@ -505,6 +506,56 @@ void fetchDeviceConfig()
     }
   }
 
+  // --- Tasmota plug: local HTTP transport (docs/plug-http-control.md) ---
+  // A non-empty tasmota_plug_host switches the plug from MQTT to its LAN /cm API.
+  // Recomputed every poll so it also tracks tasmota_plug_enabled flipping.
+  {
+    String newHost = dev["tasmota_plug_host"].isNull()
+                       ? String("")
+                       : dev["tasmota_plug_host"].as<String>();
+    newHost.trim();
+    bool newUseHttp = tasmotaPlugEnabled && newHost.length() > 0;
+
+    if (newHost != plugHttpHost || newUseHttp != plugUseHttp)
+    {
+      bool wasHttp = plugUseHttp;
+
+      // Turn the plug OFF on the transport we're leaving, while it is still the
+      // active one, so a transport switch can't strand it ON. writePlugRelay()
+      // routes by the current plugUseHttp, so this must run before the flip.
+      if (wasHttp != newUseHttp && r3State)
+      {
+        writePlugRelay(false);
+        r3Duration = 0;
+        r3Timer    = 0;
+      }
+
+      plugHttpHost       = newHost;
+      plugHttpHostIp     = IPAddress();   // force a fresh resolve on the next call
+      plugUseHttp        = newUseHttp;
+      plugHttpFailStreak = 0;
+      plugHttpReachable  = false;         // unknown until the first successful poll
+
+      if (mqttClient.connected() && tasmotaPlugTopic.length() > 0)
+      {
+        if (plugUseHttp)
+        {
+          // HTTP owns the plug now — stop tracking its MQTT stat topic.
+          mqttClient.unsubscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
+        }
+        else if (wasHttp && tasmotaPlugEnabled)
+        {
+          // Back on MQTT — re-subscribe and re-query the real plug state.
+          mqttClient.subscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
+          mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Power").c_str(), "");
+        }
+      }
+
+      LOGLNS(plugUseHttp ? "[CONFIG] Plug transport: HTTP " + plugHttpHost
+                         : String("[CONFIG] Plug transport: MQTT"));
+    }
+  }
+
   if (plugMode == "refill")
     fetchRefillTankMax();
 }
@@ -519,6 +570,20 @@ void fetchDeviceConfig()
 
 static void syncR3TimersToTasmota()
 {
+  // Plug-side Tasmota timers are an MQTT-only feature. In HTTP transport mode the
+  // controller drives every R3 schedule itself (deferred: docs/plug-http-control.md).
+  static bool loggedHttpSkip = false;
+  if (plugUseHttp)
+  {
+    if (!loggedHttpSkip)
+    {
+      LOGLN("[R3] Plug on HTTP transport — Tasmota timer sync disabled");
+      loggedHttpSkip = true;
+    }
+    return;
+  }
+  loggedHttpSkip = false;
+
   if (!tasmotaPlugEnabled || tasmotaPlugTopic.length() == 0) return;
   if (!mqttClient.connected()) return;
 
