@@ -360,7 +360,7 @@ void readSensors()
   // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
   if (mqttClient.connected())
   {
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<1536> doc;
 
     if (success)
     {
@@ -446,7 +446,7 @@ void readSensors()
 
     doc["rescan_seq"] = rescanSeq;
 
-    char buf[1024];
+    char buf[1536];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }
