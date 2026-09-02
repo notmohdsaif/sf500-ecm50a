@@ -10,6 +10,50 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-02-offline-autonomy-design.md`
 
+## Implementation status — 2026-09-03
+
+Rebased onto `cellular-fallback` (tip `80f56a9`) and executed inline. Branch
+`offline-autonomy`, ~15 commits past the base. `pio run -e esp32-s3-devkitm-1`
+SUCCESS (Flash 31.5% -> 33.4%, RAM +1%); `pio test -e native` 15/15.
+
+**Done:**
+- Phase 0 (0.1-0.3): SdFat dep + `[env:native]` (needs `test_build_src`,
+  `build_src_filter`, `test/native_shim/Arduino.h`); `src/sdcard.{h,cpp}` on
+  FSPI/SPI2 with `sdAtomicWrite`/`sdAppendLine`/`sdReadRange`/
+  `sdStreamDropPrefix`; boot self-test.
+- Phase 1 (1.1, 1.2, 1.4, 1.6): `src/netstate.{h,cpp}` (RunState, debounced
+  `haveUplink`); every cloud.cpp REST fn gated + `noteUplinkResult`;
+  `reconnectMQTT` non-blocking; control plane (readSensors / checkRefillCutoff /
+  checkAutoDosing / checkSchedules / sensor-upload / clock-snapshot) moved
+  ahead of the no-uplink / not-registered early-returns, gated on
+  `configLoaded()`. **1.3 deferred** — the cellular down-switch keeps its
+  `3x10s` blocking WiFi reconnect; harmless on `sf500_107888` (no WiFi creds =>
+  the inner loop is skipped, cellular fallback fires immediately).
+  **1.5 satisfied by the rebase** — cellular already made `handlePortalLoop()`
+  not early-return.
+- Phase 2 (2.2-2.5): `src/persist.{h,cpp}` `#ifndef UNIT_TEST` device section —
+  NVS scalars + `/config/device.json`, `/config/schedules.json`, coarse clock
+  (`persistClock` NVS-every-call + SD-hourly, `seedClockFromStore`,
+  `noteNtpSynced`). `fetchDeviceConfig`/`fetchSchedules` mirror on change;
+  `setup()`+`loop()` fall back to local, never touch `startupTime`.
+- Phase 3 (3.1-3.5): `src/journal.{h,cpp}` NDJSON encode/decode + host-tested
+  `journalDropPrefix` / `journalEvictSensorMetrics`; device-side bounded
+  `journalNextBatch` (8KB window), streaming `journalCompact`. All four emit
+  points buffer-then-drain when a card is present, `recorded_at` on every row.
+  Retention eviction guarded to <=2MB (streaming two-pass = a TODO).
+- Phase 4 (4.1-4.3): `docs/migrations/offline-recorded-at.sql`;
+  `src/backfill.{h,cpp}` bounded transport-aware drain, wired into `loop()`.
+
+**Not done:**
+- **4.1 step 2** — the `recorded_at` migration has NOT been applied to the prod
+  Supabase project. Until it is, backfilled inserts including `recorded_at` will
+  fail (PostgREST rejects unknown column) — apply it before any live backfill test.
+- **Phase 5** entirely — bench soak on `sf500_107888` (stack high-water, card
+  pull, power-cut-during-write, 24-48h induced-outage soak). The unit is on
+  cellular spike firmware and in use; needs the hardware.
+- Streaming two-pass retention eviction at the real 256MB cap.
+- Task 1.3 (fully non-blocking WiFi reconnect) if this ever goes fleet-wide.
+
 ## Global Constraints
 
 - **Device scope: `sf500_107888` only.** No fleet rollout, no dashboard UI, no second device in any test.
