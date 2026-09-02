@@ -515,6 +515,91 @@ git commit -m "Wire automatic WiFi<->cellular fallback state machine"
 
 ---
 
+## Phase 4B — REVISED: independent cellular transport (added 2026-09-02)
+
+**Why this supersedes the tail of Phase 4.** Phase 4 (commits through `9063a87`) made
+cellular a *fallback that rides alongside the captive portal*. Bench work exposed two
+problems the original spec/plan glossed over:
+
+1. `isRegistered` is a RAM-only flag re-set to `false` on **every boot**, and it is only
+   set by `registerDevice()` on the `wifiState == STATE_ONLINE` path. `loop()` bails at
+   `if (!isRegistered) return;` before any periodic work. So a deployed unit that reboots
+   (power cut / watchdog / OTA) while its site WiFi is down brings up cellular and then
+   does nothing — cellular is never actually independent.
+2. The AP opens on *every* WiFi failure, so a cellular-only site runs a
+   `sf500-xxxxx` / `admin123` softAP + web server 24/7 for no reason.
+
+User decision (2026-09-02): make cellular a **true independent transport** and only open
+the AP when a human needs it.
+
+### Model
+
+- **"Online" is transport-agnostic.** The device is online when it has *any* uplink:
+  WiFi STA associated, or a cellular PDP session up.
+- **`bringOnline()`** — one function, extracted from the two existing init blocks in
+  `setup()` and `loop()`. Runs once per boot the first time the device is online on any
+  transport: time sync, `registerDevice()`, `markAppValid()`, boot activity log,
+  `checkForOTAUpdate()` (skip on cellular — `ota.cpp` is WiFi-only, spec §4.4),
+  `initSensors()`, `loadSmartCalibration()`, `loadRainResetState()`,
+  `uploadSensorConfig()`, `fetchDeviceConfig()`, set `startupTime`.
+- **Time:** WiFi → `syncTimeWithNTP()` unchanged. Cellular → `syncTimeFromModem()`
+  (new): TinyGSM network time (`AT+CTZU=1` then `modem.getNetworkTime()` / `AT+CCLK`,
+  fall back to `AT+QNTP` against `pool.ntp.org`), then `settimeofday()`. **Bench-verify
+  on the EC801E — this AT surface is the one real unknown.**
+
+### Transport state machine (loop)
+
+- Down-switch: WiFi lost → 3× quick reconnect (~30s) → still down & modem & APN →
+  `connectCellularData()` → `activeTransport = CELLULAR`, `mqttClient.setClient(cellularClient)`.
+  No portal required.
+- Cold boot, no WiFi: `setup()` tries saved creds 15s; on fail it sets a flag and returns
+  **without** opening the portal — `loop()`'s state machine tries cellular first.
+- Up-switch: standalone `retryWifiInBackground()` on its own `PORTAL_SAVED_RETRY_INTERVAL_MS`
+  timer (moved out of `handlePortalLoop()`), independent of `portalMode`. On `WL_CONNECTED`
+  held ≥15s (hysteresis) → `modem.gprsDisconnect()`, `activeTransport = WIFI`, swap MQTT
+  client back. If `!isRegistered` (booted straight onto cellular) also call `bringOnline()`
+  so it picks up NTP time + OTA.
+- Failed cellular connect rate-limited to 1/60s (already done).
+
+### AP-open decision — `bool shouldOpenPortal()`
+
+Open the AP when ANY of:
+1. `pendingWifiPortal` — `wifi_cmd: portal` received (now deliverable over cellular).
+2. 3× power-cycle gesture: NVS `"boot"/"count"`; increment on each boot, zero it after
+   10s uptime; count reaching 3 sets `forcePortal`. No hardware button needed.
+3. No saved WiFi creds **and** no cellular uplink established (fresh unit that also can't
+   reach cellular — must be provisioned on-site).
+4. WiFi down **and** cellular unavailable (no modem / no APN / connect failed) — the
+   genuinely-offline case, same as pre-feature behaviour.
+
+Do **not** open the AP when WiFi is down but cellular is carrying traffic and creds
+exist — the device is online, nothing to configure. (Optional: if the AP is open and
+later none of 1-4 hold and no station connected for ~10 min, close it.)
+
+### Tasks
+
+- [ ] **R1** — Extract `bringOnline()` from the `setup()` and `loop()` init blocks; call
+  site is "became online on any transport, `startupTime == 0`". Build; verify WiFi boot
+  still registers/inits exactly as before (no behaviour change on the WiFi path).
+- [ ] **R2** — `syncTimeFromModem()` in `cellular.cpp`; `bringOnline()` picks NTP vs modem
+  by `activeTransport`. Bench: force cellular, confirm `time(nullptr)` becomes a real epoch
+  and `[NTP OK]`-equivalent log line prints.
+- [ ] **R3** — Move the WiFi background retry out of `handlePortalLoop()` into
+  `retryWifiInBackground()` called from `loop()`. Down-switch no longer calls
+  `startWiFiPortal()`. Build; verify switch-back still works.
+- [ ] **R4** — `shouldOpenPortal()` + the 3× power-cycle NVS gesture. `loop()` opens the
+  AP only when it returns true.
+- [ ] **R5** — Full 4G-only bench pass on `sf500_107888` (now possible): cold boot with
+  WiFi unreachable → cellular registers + inits + gets time → MQTT keepalive + all periodic
+  tasks flow over cellular → `sf500/107888/data` shows `cellular:{active:true,...}` →
+  `wifi_cmd portal` opens the AP → 3× power-cycle opens the AP → restore WiFi → switch-back.
+- [ ] **R6** — `FIRMWARE_VERSION` bump, then `superpowers:finishing-a-development-branch`.
+
+Deferred to when the unit is back on a WiFi antenna: the healthy-WiFi-never-touches-cellular
+check and the 30-min stack-canary soak (Phase 5 Task 5.3).
+
+---
+
 ## Phase 5: Certificate pinning, observability, soak
 
 Goal: replace the spike's `setInsecure()` shortcut with real certificate verification, add dashboard visibility, and soak-test before this goes near a second device.
