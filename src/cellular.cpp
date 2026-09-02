@@ -7,6 +7,7 @@
 #include "cellular.h"
 #include "config.h"
 #include "logger.h"
+#include "cellular_cert.h"
 #include <SSLClient.h>
 #include <ArduinoHttpClient.h>
 
@@ -75,7 +76,7 @@ bool connectCellularData(const char *apn)
     return false;
   }
 
-  cellularSecureClient.setInsecure(); // TODO Task 5.1: replace with setCACert()
+  cellularSecureClient.setCACert(CELLULAR_CA_CERT);
 
   LOGF("[Cellular] Data connected, IP=%s\n", modem.localIP().toString().c_str());
   return true;
