@@ -1,9 +1,19 @@
 #pragma once
 #include <Arduino.h>
+#ifndef TINY_GSM_MODEM_BG96
+#define TINY_GSM_MODEM_BG96
+#endif
+#include <TinyGsmClient.h>
 
 // UART2 to the onboard Quectel EC801E-CN modem. Nothing else on this board
 // uses UART2 (RS485/Modbus is on Serial1), so this is exclusively the modem's.
 extern HardwareSerial modemSerial;
+
+// TinyGSM driver + a plain (non-TLS) TCP client over the modem. cellularClient
+// is what MQTT rides on when cellular is the active transport (the broker link
+// is unencrypted either way). HTTPS gets a software-TLS wrapper in Phase 3.
+extern TinyGsm       modem;
+extern TinyGsmClient cellularClient;
 
 // Powers the modem (MODEM_PWR_PIN HIGH), opens UART2, and probes with AT.
 // Safe to call on boards without the modem populated — the probes just time
@@ -11,3 +21,7 @@ extern HardwareSerial modemSerial;
 // called the first time WiFi fails, never during a normal boot, so non-4G
 // units never incur the cost.
 bool detectCellularModem();
+
+// Brings up the cellular data session (network registration + GPRS/PDP attach)
+// on the given APN. Call only after detectCellularModem() has returned true.
+bool connectCellularData(const char *apn);

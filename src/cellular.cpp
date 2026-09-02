@@ -9,6 +9,8 @@
 #include "logger.h"
 
 HardwareSerial modemSerial(2); // UART2 — modem only
+TinyGsm        modem(modemSerial);
+TinyGsmClient  cellularClient(modem);
 
 // Sends one AT command, returns true on "OK", false on "ERROR" or timeout.
 static bool sendModemAT(const char *cmd, unsigned long timeoutMs = 2000)
@@ -46,4 +48,26 @@ bool detectCellularModem()
 
   digitalWrite(MODEM_PWR_PIN, LOW); // no modem present — don't leave the pin driven
   return false;
+}
+
+bool connectCellularData(const char *apn)
+{
+  LOGF("[Cellular] Bringing up data session (APN=%s)...\n", apn);
+
+  modem.init();
+
+  if (!modem.waitForNetwork(30000))
+  {
+    LOGLN("[Cellular] FAIL: no network registration");
+    return false;
+  }
+
+  if (!modem.gprsConnect(apn, "", ""))
+  {
+    LOGLN("[Cellular] FAIL: GPRS/PDP attach failed");
+    return false;
+  }
+
+  LOGF("[Cellular] Data connected, IP=%s\n", modem.localIP().toString().c_str());
+  return true;
 }

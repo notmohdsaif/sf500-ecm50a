@@ -295,6 +295,39 @@ void handleSerialCommands()
     cellularCapable = detectCellularModem();
     LOGF("[Cellular] Modem %s\n", cellularCapable ? "detected" : "not present");
   }
+  else if (cmd == "CELLTEST")
+  {
+    // Bench diagnostic: bring up cellular and prove MQTT rides over it.
+    // Not the real fallback path — that's the loop() state machine (Phase 4).
+    if (!cellularCapable)
+    {
+      LOGLN("[Cellular] Probing modem first...");
+      cellularCapable = detectCellularModem();
+    }
+    if (!cellularCapable)
+    {
+      LOGLN("[Cellular] No modem detected — CELLTEST aborted");
+    }
+    else if (connectCellularData("ansar"))
+    {
+      mqttClient.disconnect();
+      mqttClient.setClient(cellularClient);
+      String cid = "SF500_" + lastSix + "_celltest";
+      if (mqttClient.connect(cid.c_str(), MQTT_USER, MQTT_PASS))
+      {
+        LOGLN("[Cellular] MQTT connected over cellular");
+        mqttClient.publish(mqttTopicData.c_str(), "{\"celltest\":true}");
+        LOGLN("[Cellular] Test publish sent");
+      }
+      else
+      {
+        LOGF("[Cellular] MQTT connect failed, state=%d\n", mqttClient.state());
+      }
+      // Restore the WiFi transport — loop() reconnects MQTT over it next tick.
+      mqttClient.disconnect();
+      mqttClient.setClient(espClient);
+    }
+  }
   else if (cmd == "HELP")
   {
     LOGLN("\n--- Commands ---");
@@ -305,6 +338,7 @@ void handleSerialCommands()
     LOGLN("WIFIINFO     - WiFi status");
     LOGLN("RAINRESET    - Try resetting rain counter (test)");
     LOGLN("CELLDETECT   - Probe for the onboard 4G modem (test)");
+    LOGLN("CELLTEST     - Bring up 4G + MQTT-over-cellular (test)");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }
