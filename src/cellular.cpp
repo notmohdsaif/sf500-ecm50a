@@ -130,6 +130,12 @@ bool syncTimeFromModem()
   struct timeval tv = { .tv_sec = utc, .tv_usec = 0 };
   settimeofday(&tv, nullptr);
 
+  // The WiFi path's configTime() also sets the TZ so localtime_r() yields
+  // UTC+8 (the firmware stamps a hardcoded +08:00 everywhere). settimeofday()
+  // alone doesn't, so do it explicitly. POSIX sign is inverted: UTC-8 == +8h.
+  setenv("TZ", "UTC-8", 1);
+  tzset();
+
   LOGF("[Cellular] Time set from modem: %04d-%02d-%02d %02d:%02d:%02d UTC%+.1f\n",
        y, mo, d, h, mi, s, tz);
   return true;

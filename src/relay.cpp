@@ -27,9 +27,14 @@ void writeRelay(uint8_t num, bool state)
   const char *label = (num == 1) ? " (Dosing)" : " (Mixing)";
   LOGF("R%d%s -> %s\n", num, label, state ? "ON" : "OFF");
 
+  // Echo the new state to the dashboard over whatever transport is live —
+  // this is how a relay command gets confirmed and the card timer rendered.
+  publishRelayStatus();
+
+  // relay_metrics is an audit-only Supabase write; leave it WiFi-only (matches
+  // the OTA / relay-logging scope — it just doesn't accrue while on cellular).
   if (WiFi.status() == WL_CONNECTED)
   {
-    // Log relay event to Supabase
     HTTPClient http;
     String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
 
@@ -52,8 +57,6 @@ void writeRelay(uint8_t num, bool state)
       http.POST(payload);
       http.end();
     }
-
-    publishRelayStatus();
   }
 }
 
