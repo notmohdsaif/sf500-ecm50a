@@ -7,6 +7,7 @@
 #include "logger.h"
 #include "relay.h"    // writeRelay() used in checkAutoDosing
 #include "cloud.h"    // logDeviceActivity()
+#include "cellular.h" // modem.getSignalQuality() for the data payload's cellular block
 
 // =====================================================
 // SENSOR INITIALISATION
@@ -434,6 +435,18 @@ void readSensors()
       plugObj["power"]     = r3State ? 1 : 0;
       if (plugUseHttp)
         plugObj["online"]  = plugHttpReachable;
+    }
+
+    // Present once the modem has been detected (i.e. after a fallback ever
+    // occurred). Lets the dashboard show which transport is live even when
+    // the wifi block is absent because WiFi is down.
+    if (cellularCapable)
+    {
+      JsonObject cellObj = doc.createNestedObject("cellular");
+      cellObj["active"]  = (activeTransport == TRANSPORT_CELLULAR);
+      cellObj["apn"]     = cellularApn;
+      if (activeTransport == TRANSPORT_CELLULAR)
+        cellObj["signal"] = modem.getSignalQuality();
     }
 
     doc["fw"] = FIRMWARE_VERSION;
