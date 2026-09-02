@@ -1,16 +1,23 @@
 // =====================================================
 // CELLULAR.CPP
-// Onboard Quectel EC801E-CN 4G modem — hardware detection.
-// Data connection + TLS transport are added in later phases.
+// Onboard Quectel EC801E-CN 4G modem — detection, data session,
+// and the software-TLS Supabase request path used on cellular fallback.
 // =====================================================
 
 #include "cellular.h"
 #include "config.h"
 #include "logger.h"
+#include <SSLClient.h>
+#include <ArduinoHttpClient.h>
 
 HardwareSerial modemSerial(2); // UART2 — modem only
 TinyGsm        modem(modemSerial);
 TinyGsmClient  cellularClient(modem);
+
+// Software TLS (ESP32 mbedTLS) over the modem's raw TCP — the modem's own
+// AT+QSSL commands are unsupported on this firmware build. File-scope: only
+// cellularSupabaseRequest() below uses it.
+static SSLClient cellularSecureClient(&cellularClient);
 
 // Sends one AT command, returns true on "OK", false on "ERROR" or timeout.
 static bool sendModemAT(const char *cmd, unsigned long timeoutMs = 2000)
@@ -68,6 +75,50 @@ bool connectCellularData(const char *apn)
     return false;
   }
 
+  cellularSecureClient.setInsecure(); // TODO Task 5.1: replace with setCACert()
+
   LOGF("[Cellular] Data connected, IP=%s\n", modem.localIP().toString().c_str());
   return true;
+}
+
+int cellularSupabaseRequest(const char *method, const String &url,
+                            const String &reqBody, const char *contentType,
+                            const char *prefer, String &outBody)
+{
+  outBody = "";
+
+  // Split "https://host/path" into host + path.
+  int schemeEnd = url.indexOf("://");
+  if (schemeEnd < 0)
+    return HTTP_ERROR_API;
+  int hostStart = schemeEnd + 3;
+  int pathStart = url.indexOf('/', hostStart);
+  String host = (pathStart < 0) ? url.substring(hostStart)
+                                : url.substring(hostStart, pathStart);
+  String path = (pathStart < 0) ? String("/") : url.substring(pathStart);
+
+  HttpClient http(cellularSecureClient, host, 443);
+  http.setHttpResponseTimeout(15000);
+
+  http.beginRequest();
+  int ret = http.startRequest(path.c_str(), method, contentType,
+                              reqBody.length() > 0 ? (int)reqBody.length() : -1,
+                              nullptr);
+  if (ret != HTTP_SUCCESS)
+  {
+    http.stop();
+    return ret;
+  }
+  http.sendHeader("apikey", SUPABASE_KEY);
+  http.sendHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+  if (prefer)
+    http.sendHeader("Prefer", prefer);
+  http.endRequest();
+  if (reqBody.length() > 0)
+    http.print(reqBody);
+
+  int code = http.responseStatusCode();
+  outBody = http.responseBody();
+  http.stop();
+  return code;
 }

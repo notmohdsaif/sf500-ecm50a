@@ -82,6 +82,13 @@ extern std::vector<NetItem> scanList;
 // Set by lazy detection on first WiFi failure (see main.cpp loop()), never
 // during a normal boot. Non-4G boards leave this false forever.
 extern bool                 cellularCapable;
+
+// Which network path is currently carrying MQTT + Supabase traffic. Supabase
+// HTTPS callers branch on this: WiFi uses HTTPClient over secureClient,
+// cellular uses ArduinoHttpClient over the modem's software-TLS client
+// (cellular.cpp). The state machine that flips this lives in main.cpp loop().
+enum NetworkTransport { TRANSPORT_WIFI, TRANSPORT_CELLULAR };
+extern NetworkTransport     activeTransport;
 extern bool                 portalMode;
 extern unsigned long        portalConnectStartMs;
 extern unsigned long        portalStartedAt;

@@ -323,6 +323,21 @@ void handleSerialCommands()
       {
         LOGF("[Cellular] MQTT connect failed, state=%d\n", mqttClient.state());
       }
+
+      // HTTPS-over-cellular: one direct Supabase GET (clear pass/fail signal),
+      // then the same call through fetchDeviceConfig()'s transport branch.
+      LOGLN("[Cellular] Testing Supabase over cellular (software TLS)...");
+      String body;
+      String testUrl = String(SUPABASE_URL) +
+                       "/rest/v1/device_management?device=eq.sf500_" + lastSix +
+                       "&select=device,auto_dosing";
+      int hc = cellularSupabaseRequest("GET", testUrl, "", nullptr, nullptr, body);
+      LOGF("[Cellular] Supabase HTTP %d, body: %s\n", hc, body.substring(0, 120).c_str());
+
+      activeTransport = TRANSPORT_CELLULAR;
+      fetchDeviceConfig();
+      activeTransport = TRANSPORT_WIFI;
+
       // Restore the WiFi transport — loop() reconnects MQTT over it next tick.
       mqttClient.disconnect();
       mqttClient.setClient(espClient);

@@ -11,7 +11,7 @@ extern HardwareSerial modemSerial;
 
 // TinyGSM driver + a plain (non-TLS) TCP client over the modem. cellularClient
 // is what MQTT rides on when cellular is the active transport (the broker link
-// is unencrypted either way). HTTPS gets a software-TLS wrapper in Phase 3.
+// is unencrypted either way).
 extern TinyGsm       modem;
 extern TinyGsmClient cellularClient;
 
@@ -25,3 +25,17 @@ bool detectCellularModem();
 // Brings up the cellular data session (network registration + GPRS/PDP attach)
 // on the given APN. Call only after detectCellularModem() has returned true.
 bool connectCellularData(const char *apn);
+
+// One Supabase REST call over cellular: software TLS (ESP32 mbedTLS) on top of
+// the modem's raw TCP, driven by ArduinoHttpClient (ESP32's HTTPClient can't
+// take a non-WiFiClient). Adds the apikey + Bearer auth headers itself.
+//  - method: "GET" | "POST" | "PATCH"
+//  - url: full https://<supabase-host>/... URL
+//  - reqBody: JSON body for POST/PATCH, "" for GET
+//  - contentType: e.g. "application/json", or nullptr for GET
+//  - prefer: value for the Prefer header, or nullptr
+//  - outBody: receives the response body
+// Returns the HTTP status code, or a negative ArduinoHttpClient error code.
+int cellularSupabaseRequest(const char *method, const String &url,
+                            const String &reqBody, const char *contentType,
+                            const char *prefer, String &outBody);

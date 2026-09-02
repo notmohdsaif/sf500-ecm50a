@@ -7,6 +7,7 @@
 #include "logger.h"
 #include "relay.h"
 #include "mqtt_handler.h"
+#include "cellular.h"   // cellularSupabaseRequest() — cellular-fallback transport
 #include <HTTPClient.h>
 
 // =====================================================
@@ -51,32 +52,38 @@ void syncTimeWithNTP()
 
 void registerDevice()
 {
-  HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
-  if (!http.begin(secureClient, url))
-    return;
+  int    code;
+  String response;
 
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(15000);
-
-  int code = http.GET();
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    code = cellularSupabaseRequest("GET", url, "", nullptr, nullptr, response);
+  }
+  else
+  {
+    HTTPClient http;
+    if (!http.begin(secureClient, url))
+      return;
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.setTimeout(15000);
+    code = http.GET();
+    if (code == 200)
+      response = http.getString();
+    http.end();
+  }
   LOGF("[REG] HTTP code: %d\n", code);
 
   if (code == 200)
   {
-    String response = http.getString();
     LOGLNS("[REG] Response: " + response.substring(0, 80));
 
     if (response == "[]" || response.length() < 5)
     {
       // New device — register it
-      http.end();
-
       String regUrl = String(SUPABASE_URL) + "/rest/v1/device_management";
-      if (!http.begin(secureClient, regUrl))
-        return;
 
       StaticJsonDocument<256> doc;
       doc["device"]   = deviceName;
@@ -88,16 +95,30 @@ void registerDevice()
       String payload;
       serializeJson(doc, payload);
 
-      http.addHeader("Content-Type", "application/json");
-      http.addHeader("apikey", SUPABASE_KEY);
-      http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-      http.addHeader("Prefer", "return=representation");
-
-      code = http.POST(payload);
-      LOGF("[REG] POST code: %d\n", code);
-      if (code != 200 && code != 201 && code != 409)
-        LOGLNS("[REG] POST failed: " + http.getString().substring(0, 120));
-      isRegistered = (code == 200 || code == 201 || code == 409);
+      int    pcode;
+      String perr;
+      if (activeTransport == TRANSPORT_CELLULAR)
+      {
+        pcode = cellularSupabaseRequest("POST", regUrl, payload, "application/json",
+                                        "return=representation", perr);
+      }
+      else
+      {
+        HTTPClient http;
+        if (!http.begin(secureClient, regUrl))
+          return;
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("apikey", SUPABASE_KEY);
+        http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+        http.addHeader("Prefer", "return=representation");
+        pcode = http.POST(payload);
+        perr  = http.getString();
+        http.end();
+      }
+      LOGF("[REG] POST code: %d\n", pcode);
+      if (pcode != 200 && pcode != 201 && pcode != 409)
+        LOGLNS("[REG] POST failed: " + perr.substring(0, 120));
+      isRegistered = (pcode == 200 || pcode == 201 || pcode == 409);
     }
     else
     {
@@ -105,7 +126,6 @@ void registerDevice()
     }
   }
 
-  http.end();
   if (isRegistered)
     LOGLN("Device registered");
 }
@@ -120,11 +140,7 @@ void uploadSensorConfig()
   if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
     return;
 
-  HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
-
-  if (!http.begin(secureClient, url))
-    return;
 
   StaticJsonDocument<512> doc;
   JsonObject sensorObj = doc.createNestedObject("sensor");
@@ -166,14 +182,26 @@ void uploadSensorConfig()
   String payload;
   serializeJson(doc, payload);
 
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.addHeader("Prefer", "return=representation");
-  http.setTimeout(3000);   // can run outside boot (e.g. rescan) — keep well under MQTT keepalive
-
-  int code = http.PATCH(payload);
-  http.end();
+  int code;
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    String resp;
+    code = cellularSupabaseRequest("PATCH", url, payload, "application/json",
+                                   "return=representation", resp);
+  }
+  else
+  {
+    HTTPClient http;
+    if (!http.begin(secureClient, url))
+      return;
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.addHeader("Prefer", "return=representation");
+    http.setTimeout(3000);   // can run outside boot (e.g. rescan) — keep well under MQTT keepalive
+    code = http.PATCH(payload);
+    http.end();
+  }
 
   LOGLN(code == 200 || code == 204 ? "Sensor config uploaded" : "Config upload failed");
 }
@@ -187,7 +215,6 @@ void uploadSensorReadings()
   if (!sensors.hasData)
     return;
 
-  HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
   DynamicJsonDocument doc(768);
@@ -259,18 +286,28 @@ void uploadSensorReadings()
   String payload;
   serializeJson(arr, payload);
 
-  if (http.begin(secureClient, url))
+  int code;
+  if (activeTransport == TRANSPORT_CELLULAR)
   {
+    String resp;
+    code = cellularSupabaseRequest("POST", url, payload, "application/json",
+                                   nullptr, resp);
+  }
+  else
+  {
+    HTTPClient http;
+    if (!http.begin(secureClient, url))
+      return;
     http.addHeader("Content-Type", "application/json");
     http.addHeader("apikey", SUPABASE_KEY);
     http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
     http.setTimeout(15000);
-
-    int code = http.POST(payload);
-    if (code == 200 || code == 201)
-      LOGF("Uploaded %u readings\n", (unsigned)arr.size());
+    code = http.POST(payload);
     http.end();
   }
+
+  if (code == 200 || code == 201)
+    LOGF("Uploaded %u readings\n", (unsigned)arr.size());
 }
 
 // =====================================================
@@ -279,11 +316,7 @@ void uploadSensorReadings()
 
 void updateDeviceStatus(const char *status)
 {
-  HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
-
-  if (!http.begin(secureClient, url))
-    return;
 
   StaticJsonDocument<128> doc;
   doc["status"] = status;
@@ -303,6 +336,16 @@ void updateDeviceStatus(const char *status)
   String payload;
   serializeJson(doc, payload);
 
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    String resp;
+    cellularSupabaseRequest("PATCH", url, payload, "application/json", nullptr, resp);
+    return;
+  }
+
+  HTTPClient http;
+  if (!http.begin(secureClient, url))
+    return;
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
@@ -322,23 +365,30 @@ static void fetchRefillTankMax()
   char sensorId[8];
   sprintf(sensorId, "wl_%02d", wlSensorId);
 
-  HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/sensor_config?device=eq." + deviceName +
                "&sensor_id=eq." + sensorId + "&select=max_thres";
 
-  if (!http.begin(secureClient, url))
-    return;
-
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(6000);
-
-  int code = http.GET();
-  if (code != 200) { http.end(); return; }
-
-  String response = http.getString();
-  http.end();
+  int    code;
+  String response;
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    code = cellularSupabaseRequest("GET", url, "", nullptr, nullptr, response);
+  }
+  else
+  {
+    HTTPClient http;
+    if (!http.begin(secureClient, url))
+      return;
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.setTimeout(6000);
+    code = http.GET();
+    if (code == 200)
+      response = http.getString();
+    http.end();
+  }
+  if (code != 200) return;
 
   StaticJsonDocument<128> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
@@ -358,23 +408,30 @@ static void fetchRefillTankMax()
 
 void fetchDeviceConfig()
 {
-  HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
                "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode,tasmota_plug_host";
 
-  if (!http.begin(secureClient, url))
-    return;
-
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(6000);   // runs every 10s in loop() — keep well under MQTT keepalive
-
-  int code = http.GET();
-  if (code != 200) { http.end(); return; }
-
-  String response = http.getString();
-  http.end();
+  int    code;
+  String response;
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    code = cellularSupabaseRequest("GET", url, "", nullptr, nullptr, response);
+  }
+  else
+  {
+    HTTPClient http;
+    if (!http.begin(secureClient, url))
+      return;
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.setTimeout(6000);   // runs every 10s in loop() — keep well under MQTT keepalive
+    code = http.GET();
+    if (code == 200)
+      response = http.getString();
+    http.end();
+  }
+  if (code != 200) return;
 
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
@@ -645,23 +702,30 @@ static void syncR3TimersToTasmota()
 
 void fetchSchedules()
 {
-  HTTPClient http;
   String url = String(SUPABASE_URL) +
                "/rest/v1/relay_schedule?device=eq." + deviceName +
                "&status=eq.true&select=*";
 
-  if (!http.begin(secureClient, url))
-    return;
-
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.setTimeout(6000);   // runs every 60s in loop() — keep well under MQTT keepalive
-
-  int code = http.GET();
-  if (code != 200) { http.end(); return; }
-
-  String response = http.getString();
-  http.end();
+  int    code;
+  String response;
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    code = cellularSupabaseRequest("GET", url, "", nullptr, nullptr, response);
+  }
+  else
+  {
+    HTTPClient http;
+    if (!http.begin(secureClient, url))
+      return;
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.setTimeout(6000);   // runs every 60s in loop() — keep well under MQTT keepalive
+    code = http.GET();
+    if (code == 200)
+      response = http.getString();
+    http.end();
+  }
+  if (code != 200) return;
 
   DynamicJsonDocument doc(4096);
   if (doc.capacity() == 0) { LOGLN("[SCHEDULE] JSON alloc failed (low heap)"); return; }
@@ -729,9 +793,7 @@ void logDeviceActivity(const char *category, const char *action)
 {
   if (!isRegistered || deviceName.isEmpty()) return;
 
-  HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/activity_log";
-  if (!http.begin(secureClient, url)) return;
 
   StaticJsonDocument<256> doc;
   doc["device"]   = deviceName;
@@ -742,6 +804,16 @@ void logDeviceActivity(const char *category, const char *action)
   String payload;
   serializeJson(doc, payload);
 
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    String resp;
+    cellularSupabaseRequest("POST", url, payload, "application/json",
+                            "return=minimal", resp);
+    return;
+  }
+
+  HTTPClient http;
+  if (!http.begin(secureClient, url)) return;
   http.addHeader("Content-Type",  "application/json");
   http.addHeader("apikey",        SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
