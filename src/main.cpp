@@ -11,6 +11,7 @@
 #include "sensors.h"
 #include "relay.h"
 #include "ota.h"
+#include "cellular.h"
 #include <esp_task_wdt.h>
 
 // =====================================================
@@ -28,6 +29,7 @@ DNSServer dnsServer;
 
 WiFiState wifiState = STATE_PORTAL;
 bool cellularCapable = false;
+bool cellularDetectAttempted = false;
 NetworkTransport activeTransport = TRANSPORT_WIFI;
 String cellularApn = "";
 std::vector<NetItem> scanList;
@@ -164,6 +166,51 @@ size_t getArduinoLoopTaskStackSize(void) {
   return 20480;
 }
 
+// Cellular fallback trigger. Called from loop()'s portal path whenever the
+// device is stuck without WiFi — whether saved creds failed to connect or
+// there are none at all (fresh unit / after a wifi_cmd forget). Lazily probes
+// the modem once per boot, then, if a modem and an APN are both present,
+// brings up a cellular data session and moves MQTT + Supabase onto it. The
+// captive portal stays open throughout so on-site WiFi setup still works.
+// Rate-limited so a failing connect can't peg the loop.
+static void tryCellularFallback()
+{
+  if (activeTransport != TRANSPORT_WIFI)
+    return;
+  if (WiFi.status() == WL_CONNECTED)
+    return; // WiFi is actually up (e.g. portal creds just worked) — no fallback
+
+  static unsigned long lastAttempt = 0;
+  if (lastAttempt != 0 && millis() - lastAttempt < 60000)
+    return;
+  lastAttempt = millis();
+
+  if (!cellularCapable && !cellularDetectAttempted)
+  {
+    cellularDetectAttempted = true;
+    cellularCapable = detectCellularModem();
+    LOGF("[Cellular] Modem %s\n", cellularCapable ? "detected" : "not present");
+  }
+
+  // No modem, or no APN configured -> feature stays inert (spec safety default).
+  if (!cellularCapable || cellularApn.length() == 0)
+    return;
+
+  LOGLN("[Cellular] No WiFi — attempting cellular fallback...");
+  esp_task_wdt_reset(); // fresh 60s for the (blocking) modem bring-up
+  if (connectCellularData(cellularApn.c_str()))
+  {
+    activeTransport = TRANSPORT_CELLULAR;
+    mqttClient.disconnect();
+    mqttClient.setClient(cellularClient);
+    LOGLN("[Cellular] Fallback active");
+  }
+  else
+  {
+    LOGLN("[Cellular] Fallback attempt failed — will retry");
+  }
+}
+
 void setup()
 {
   Serial.begin(9600);
@@ -230,6 +277,15 @@ void setup()
   String savedSSID = wifiPrefs.getString("ssid", "");
   String savedPass = wifiPrefs.getString("pass", "");
   wifiPrefs.end();
+
+  // Cellular APN persists across reboots so fallback still works after a
+  // wifi_cmd forget (which clears WiFi creds and restarts) or a power cut
+  // when the device can't reach Supabase to re-fetch it.
+  wifiPrefs.begin("cellular", true);
+  cellularApn = wifiPrefs.getString("apn", "");
+  wifiPrefs.end();
+  if (cellularApn.length() > 0)
+    LOGF("[Cellular] Saved APN: %s\n", cellularApn.c_str());
 
   LOGF("[WiFi] Saved SSID: '%s'\n",
        savedSSID.length() > 0 ? savedSSID.c_str() : "(empty)");
@@ -311,11 +367,27 @@ void loop()
   handleSerialCommands();
 
   // --- Portal mode ---
-  // handlePortalLoop() sets portalMode=false when the AP is torn down
+  // handlePortalLoop() sets portalMode=false when the AP is torn down.
+  // While cellular fallback is carrying traffic we still service the portal
+  // (so on-site WiFi reconfig keeps working) but fall through afterwards so
+  // MQTT + Supabase keep flowing over the modem instead of returning early.
   if (portalMode)
   {
     handlePortalLoop();
-    return;
+    tryCellularFallback();   // engage cellular if we're stuck without WiFi
+    if (activeTransport != TRANSPORT_CELLULAR)
+      return;
+  }
+
+  // Cellular -> WiFi recovery: the portal's auto-retry (or any reconnect)
+  // brought WiFi back. Tear down the modem session and switch back.
+  if (activeTransport == TRANSPORT_CELLULAR && WiFi.status() == WL_CONNECTED)
+  {
+    LOGLN("[Cellular] WiFi recovered — switching back from cellular");
+    modem.gprsDisconnect();
+    activeTransport = TRANSPORT_WIFI;
+    mqttClient.disconnect();
+    mqttClient.setClient(espClient);
   }
 
   // One-time initialization after portal completes (wifiState==STATE_ONLINE, not yet registered)
@@ -344,7 +416,11 @@ void loop()
   }
 
   // --- WiFi reconnect if dropped ---
-  if (WiFi.status() != WL_CONNECTED)
+  // Skipped entirely while cellular fallback is active — the portal's 5-min
+  // auto-retry is the single WiFi-recovery path then, and the recovery check
+  // above switches back once it succeeds. Avoids a 30s blocking reconnect
+  // storm competing with the modem for the loop.
+  if (WiFi.status() != WL_CONNECTED && activeTransport != TRANSPORT_CELLULAR)
   {
     LOGLN("[WiFi] Connection lost, reconnecting...");
 
@@ -381,6 +457,8 @@ void loop()
 
     if (!reconnected)
     {
+      // Quick reconnect failed -> open the portal. loop()'s portal path then
+      // drives cellular fallback (tryCellularFallback) if a modem + APN exist.
       LOGLN("[WiFi] All attempts failed, opening hotspot...");
       startWiFiPortal();
       return;

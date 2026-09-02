@@ -622,6 +622,9 @@ void fetchDeviceConfig()
     if (newApn != cellularApn)
     {
       cellularApn = newApn;
+      wifiPrefs.begin("cellular", false);
+      wifiPrefs.putString("apn", cellularApn);  // survives reboot / wifi forget
+      wifiPrefs.end();
       LOGLNS(cellularApn.length() ? "[CONFIG] Cellular APN: " + cellularApn
                                   : String("[CONFIG] Cellular APN: (cleared)"));
     }

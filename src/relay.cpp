@@ -224,6 +224,7 @@ void handleSerialCommands()
 
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
+  String rawCmd = cmd;   // case preserved — needed for CELLAPN's argument
   cmd.toUpperCase();
   if (cmd.length() == 0)
     return;
@@ -297,14 +298,13 @@ void handleSerialCommands()
   }
   else if (cmd == "CELLTEST")
   {
-    // Bench diagnostic: bring up cellular and prove MQTT rides over it.
-    // Not the real fallback path — that's the loop() state machine (Phase 4).
-    if (!cellularCapable)
+    // Bench diagnostic: bring up cellular and prove MQTT + Supabase ride over
+    // it. Not the real fallback path — that's the loop() state machine.
+    if (activeTransport == TRANSPORT_CELLULAR)
     {
-      LOGLN("[Cellular] Probing modem first...");
-      cellularCapable = detectCellularModem();
+      LOGLN("[Cellular] Already on cellular fallback — CELLTEST skipped");
     }
-    if (!cellularCapable)
+    else if (!cellularCapable && !(cellularCapable = detectCellularModem()))
     {
       LOGLN("[Cellular] No modem detected — CELLTEST aborted");
     }
@@ -343,6 +343,29 @@ void handleSerialCommands()
       mqttClient.setClient(espClient);
     }
   }
+  else if (cmd == "CELLAPN" || cmd.startsWith("CELLAPN "))
+  {
+    // CELLAPN            -> show current APN
+    // CELLAPN <apn>      -> set + persist to NVS (fallback arms within ~60s)
+    // CELLAPN -          -> clear
+    int sp = rawCmd.indexOf(' ');
+    if (sp < 0)
+    {
+      LOGLNS(cellularApn.length() ? "[Cellular] APN: " + cellularApn
+                                  : String("[Cellular] APN: (none)"));
+    }
+    else
+    {
+      String arg = rawCmd.substring(sp + 1);
+      arg.trim();
+      cellularApn = (arg == "-") ? String("") : arg;
+      wifiPrefs.begin("cellular", false);
+      wifiPrefs.putString("apn", cellularApn);
+      wifiPrefs.end();
+      LOGLNS(cellularApn.length() ? "[Cellular] APN set + saved: " + cellularApn
+                                  : String("[Cellular] APN cleared"));
+    }
+  }
   else if (cmd == "HELP")
   {
     LOGLN("\n--- Commands ---");
@@ -354,6 +377,7 @@ void handleSerialCommands()
     LOGLN("RAINRESET    - Try resetting rain counter (test)");
     LOGLN("CELLDETECT   - Probe for the onboard 4G modem (test)");
     LOGLN("CELLTEST     - Bring up 4G + MQTT-over-cellular (test)");
+    LOGLN("CELLAPN [x]  - Show/set/clear the persisted cellular APN");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }

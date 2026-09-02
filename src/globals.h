@@ -82,6 +82,9 @@ extern std::vector<NetItem> scanList;
 // Set by lazy detection on first WiFi failure (see main.cpp loop()), never
 // during a normal boot. Non-4G boards leave this false forever.
 extern bool                 cellularCapable;
+// Latch so the ~11s modem probe runs at most once per boot even if WiFi
+// keeps failing on a board with no modem.
+extern bool                 cellularDetectAttempted;
 
 // Which network path is currently carrying MQTT + Supabase traffic. Supabase
 // HTTPS callers branch on this: WiFi uses HTTPClient over secureClient,
