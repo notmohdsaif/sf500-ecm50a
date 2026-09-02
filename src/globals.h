@@ -18,6 +18,7 @@
 #include <vector>
 #include <algorithm>
 #include "config.h"
+#include "netstate.h"   // RunState + haveUplink() connectivity signal
 
 // =====================================================
 // TYPES & STRUCTS
