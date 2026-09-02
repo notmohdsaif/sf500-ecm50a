@@ -26,6 +26,12 @@ bool detectCellularModem();
 // on the given APN. Call only after detectCellularModem() has returned true.
 bool connectCellularData(const char *apn);
 
+// Sets the ESP32 system clock from the modem's network time (NITZ/CTZU, with
+// an AT+QNTP fallback). Used instead of syncTimeWithNTP() when the active
+// transport is cellular — SNTP/configTime() can't route through TinyGSM.
+// Returns true if the clock was set to a plausible value.
+bool syncTimeFromModem();
+
 // One Supabase REST call over cellular: software TLS (ESP32 mbedTLS) on top of
 // the modem's raw TCP, driven by ArduinoHttpClient (ESP32's HTTPClient can't
 // take a non-WiFiClient). Adds the apikey + Bearer auth headers itself.
