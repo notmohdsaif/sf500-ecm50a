@@ -13,6 +13,7 @@
 #include "ota.h"
 #include "cellular.h"
 #include "sdcard.h"
+#include "persist.h"
 #include <esp_task_wdt.h>
 
 // =====================================================
@@ -288,9 +289,14 @@ static void bringOnline()
 
   esp_task_wdt_reset();
   if (activeTransport == TRANSPORT_CELLULAR)
-    syncTimeFromModem();
+  {
+    if (syncTimeFromModem())
+      noteNtpSynced();   // real time now — clear the coarse-clock approx flag
+  }
   else
-    syncTimeWithNTP();
+  {
+    syncTimeWithNTP();   // calls noteNtpSynced() itself on success
+  }
 
   esp_task_wdt_reset();
   registerDevice();
@@ -453,6 +459,25 @@ void setup()
   // --- Online initialisation (WiFi here; the cellular path runs it from loop()) ---
   if (wifiState == STATE_ONLINE && startupTime == 0)
     bringOnline();
+
+  // --- No cloud config reachable at boot: fall back to the local mirror so
+  //     auto-dosing + water-in detection resume autonomously. Do NOT touch
+  //     startupTime — bringOnline() must still run once a transport appears. ---
+  if (!configLoaded())
+  {
+    if (time(nullptr) < 1000000000)
+      seedClockFromStore();
+    if (loadConfigLocal())
+    {
+      loadSchedulesLocal();
+      setRunState(RS_OFFLINE_AUTONOMOUS);
+      LOGLN("[boot] running autonomously from local config (no cloud reachable)");
+    }
+    else
+    {
+      LOGLN("[boot] no local config yet — waiting for first uplink");
+    }
+  }
 
   // Watchdog: if loop() freezes for >60s, hard-reset the device.
   // 60s covers worst-case WiFi reconnect (30s) + one blocking HTTP call (6s).
@@ -648,6 +673,21 @@ void loop()
     portalAutoOpened = false;
   }
 
+  // --- Late local-config fallback: booted online but lost the link before the
+  //     first fetchDeviceConfig() ever completed. Retry the NVS/SD mirror at
+  //     most every 30s so the control plane can start. ---
+  static unsigned long lastLocalCfgTry = 0;
+  if (!configLoaded() && (now - lastLocalCfgTry >= 30000UL || lastLocalCfgTry == 0))
+  {
+    lastLocalCfgTry = now;
+    if (time(nullptr) < 1000000000) seedClockFromStore();
+    if (loadConfigLocal())
+    {
+      loadSchedulesLocal();
+      LOGLN("[run] local config loaded — control plane active");
+    }
+  }
+
   // --- Run-state (observability only) ---
   if (portalMode)                 setRunState(RS_PROVISIONING);
   else if (haveUplink())          setRunState(RS_ONLINE);
@@ -672,6 +712,15 @@ void loop()
     {
       checkSchedules();
       lastScheduleCheck = now;
+    }
+
+    // Snapshot the wall clock every 5 min so a power cut during a blackout
+    // reboots with a clock that is at worst one interval stale.
+    static unsigned long lastClockPersist = 0;
+    if (now - lastClockPersist >= 300000UL)
+    {
+      persistClock();
+      lastClockPersist = now;
     }
   }
 

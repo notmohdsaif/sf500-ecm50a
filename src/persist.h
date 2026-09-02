@@ -38,3 +38,27 @@ String configToJson(const LocalConfig& c);
 // Parse back. Returns false on a JSON error or a missing required key
 // (ecTarget, dosingTime). Unset optional keys take documented defaults.
 bool configFromJson(const String& json, LocalConfig& c);
+
+// ---------------------------------------------------------------------------
+// Device-side persistence (not built in the native host-test env).
+// ---------------------------------------------------------------------------
+#ifndef UNIT_TEST
+
+// Config: NVS scalars ("cfg" namespace) + a full SD mirror at
+// /config/device.json. Written only when fetchDeviceConfig() reports a change.
+void snapshotGlobalsToConfig(LocalConfig& c);   // fill c from the live globals
+void applyConfigToGlobals(const LocalConfig& c);
+bool persistConfig();                            // globals -> NVS + SD
+bool loadConfigLocal();                          // NVS (or SD fallback) -> globals; calls setConfigLoaded()
+
+// Schedules: SD only (/config/schedules.json), rewritten on every fetch.
+void persistSchedules();
+bool loadSchedulesLocal();                       // -> schedules[] / scheduleCount
+
+// Coarse wall clock across an offline reboot (the board has no battery RTC).
+void persistClock();          // time(nullptr) -> /state/clock + NVS, every ~5 min
+bool seedClockFromStore();    // on an offline boot, settimeofday() from the store
+void noteNtpSynced();         // clears the approx flag; logs the correction delta
+bool clockIsApprox();         // true while running on a seeded (non-NTP) clock
+
+#endif  // UNIT_TEST

@@ -8,6 +8,7 @@
 #include "relay.h"
 #include "mqtt_handler.h"
 #include "cellular.h"   // cellularSupabaseRequest() — cellular-fallback transport
+#include "persist.h"    // persistConfig() / persistSchedules() — local mirror for offline cold-start
 #include <HTTPClient.h>
 
 // =====================================================
@@ -37,6 +38,7 @@ void syncTimeWithNTP()
         LOGF("NTP OK: %04d-%02d-%02d %02d:%02d:%02d\n",
              ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
              ti.tm_hour, ti.tm_min, ti.tm_sec);
+        noteNtpSynced();   // real time now — clear the coarse-clock approx flag
         return;
       }
       delay(500);
@@ -408,8 +410,13 @@ static void fetchRefillTankMax()
   if (!doc[0]["max_thres"].isNull())
   {
     float tankMax = doc[0]["max_thres"];
-    refillCutoffMm = tankMax * REFILL_CUTOFF_PCT;
-    LOGF("[CONFIG] Refill cutoff: %.0fmm (%.0f%% of %.0fmm tank)\n", refillCutoffMm, REFILL_CUTOFF_PCT * 100, tankMax);
+    float newCutoff = tankMax * REFILL_CUTOFF_PCT;
+    if (fabs(newCutoff - refillCutoffMm) > 0.5f)
+    {
+      refillCutoffMm = newCutoff;
+      LOGF("[CONFIG] Refill cutoff: %.0fmm (%.0f%% of %.0fmm tank)\n", refillCutoffMm, REFILL_CUTOFF_PCT * 100, tankMax);
+      persistConfig();
+    }
   }
 }
 
@@ -645,6 +652,13 @@ void fetchDeviceConfig()
 
   if (plugMode == "refill")
     fetchRefillTankMax();
+
+  // Mirror the just-synced config locally so the device can cold-start
+  // auto-dosing during a blackout. Write only on a real change (flash wear);
+  // always mark the config as loaded so the control plane runs.
+  if (changed)
+    persistConfig();
+  setConfigLoaded();
 }
 
 // =====================================================
@@ -810,6 +824,9 @@ void fetchSchedules()
                   schedules[i].minute,
                   schedules[i].duration);
   }
+
+  // Mirror to SD so schedules survive a cold boot with no connectivity.
+  persistSchedules();
 
   // Push R3 schedules into plug-side Tasmota timers so they fire autonomously
   // even when the ESP32 is offline.
