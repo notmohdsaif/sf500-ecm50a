@@ -578,25 +578,53 @@ later none of 1-4 hold and no station connected for ~10 min, close it.)
 
 ### Tasks
 
-- [ ] **R1** — Extract `bringOnline()` from the `setup()` and `loop()` init blocks; call
-  site is "became online on any transport, `startupTime == 0`". Build; verify WiFi boot
-  still registers/inits exactly as before (no behaviour change on the WiFi path).
-- [ ] **R2** — `syncTimeFromModem()` in `cellular.cpp`; `bringOnline()` picks NTP vs modem
-  by `activeTransport`. Bench: force cellular, confirm `time(nullptr)` becomes a real epoch
-  and `[NTP OK]`-equivalent log line prints.
-- [ ] **R3** — Move the WiFi background retry out of `handlePortalLoop()` into
-  `retryWifiInBackground()` called from `loop()`. Down-switch no longer calls
-  `startWiFiPortal()`. Build; verify switch-back still works.
-- [ ] **R4** — `shouldOpenPortal()` + the 3× power-cycle NVS gesture. `loop()` opens the
-  AP only when it returns true.
-- [ ] **R5** — Full 4G-only bench pass on `sf500_107888` (now possible): cold boot with
-  WiFi unreachable → cellular registers + inits + gets time → MQTT keepalive + all periodic
-  tasks flow over cellular → `sf500/107888/data` shows `cellular:{active:true,...}` →
-  `wifi_cmd portal` opens the AP → 3× power-cycle opens the AP → restore WiFi → switch-back.
-- [ ] **R6** — `FIRMWARE_VERSION` bump, then `superpowers:finishing-a-development-branch`.
+- [x] **R1** — `bringOnline()` extracted (commit ea8cfa9).
+- [x] **R2** — `syncTimeFromModem()` — modem network time (AT+QLTS/CTZU, QNTP fallback);
+  also `setenv("TZ","UTC-8")` so `localtime_r` yields +08:00 (commit ea8cfa9 + 5d8c524).
+- [x] **R3** — standalone `retryWifiInBackground()`; down-switch no longer opens the portal
+  (commit ea8cfa9).
+- [x] **R4** — `portalRequestedByHuman()` (early) + `shouldOpenPortalOffline()` (late) +
+  3× power-cycle NVS gesture (commit ea8cfa9).
+- [x] **R5** — 4G-only bench pass DONE on sf500_107888: cold boot with no WiFi → registers +
+  inits + modem time → steady MQTT + periodic tasks over cellular → `data` carries
+  `cellular:{active,apn,signal}` → `wifi_cmd portal` and 3× power-cycle both open the AP →
+  live dashboard relay on/off + timer control works over cellular.
+- [x] **Lost-link recovery** (commits 9066236, 79baa7b) — `isGprsConnected()` health check
+  every 20s; dead >40s → drop to WiFi/portal; `connectCellularData()` reboots the modem
+  (`AT+CFUN=1,1`, ≤1/2min) on failure so a re-inserted SIM is re-scanned; `getSimStatus()`
+  fast-fail for absent/PIN-locked. Verified real SIM pull + re-insert with no WiFi.
+- [x] **Relay-card parity** (commit 5d8c524) — `publishRelayStatus()` moved out of the
+  `if (WiFi.status()==WL_CONNECTED)` guard in `writeRelay()` so relay commands are
+  confirmed + the card timer renders on cellular.
 
-Deferred to when the unit is back on a WiFi antenna: the healthy-WiFi-never-touches-cellular
-check and the 30-min stack-canary soak (Phase 5 Task 5.3).
+### Still to do (needs sf500_107888 back on a WiFi antenna)
+
+- [ ] **R6a** — Healthy-WiFi regression check: fresh flash, onboard over WiFi, confirm the
+  WiFi path is unchanged (bringOnline from setup(), lazy detect never fires, no fallback,
+  no AP).
+- [ ] **R6b** — WiFi → cellular → WiFi live cycle: kill the AP → `Fallback active` (AP must
+  stay closed) → all periodic traffic over cellular → restore WiFi → switch-back after 15s.
+- [ ] **R6c** — Task 5.3 soak: 30+ min on cellular with sensor/schedule activity, watch for
+  the v1.2.5 stack-canary signature (`Guru Meditation` / `Stack canary`). `bringOnline()`
+  now runs on `loopTask` on the cellular path too — extra stack pressure to watch.
+- [ ] **R6d** — Bump `FIRMWARE_VERSION` (check `git tag -l "v1.2.*"` for the next number),
+  commit, then `superpowers:finishing-a-development-branch` (merge `cellular-fallback` →
+  `main`, tag).
+
+### Dashboard follow-up (separate repo: `Dashboard/sf500`)
+
+- [ ] **Header connectivity badge** — when the device is connected via cellular, swap the
+  header's WiFi signal icon for a 4G/LTE icon. The `sf500/{lastSix}/data` payload already
+  carries everything needed: `cellular:{active:true, apn, signal}` is present and the
+  `wifi:{}` block is absent while on cellular. So: if `data.cellular?.active` → render the
+  4G icon (optionally with `cellular.signal` as bars, CSQ 0–31); else the existing WiFi
+  icon from `data.wifi`. Small, presentational; no firmware change.
+
+### Cleanup once merged
+
+- `CELLDETECT` / `CELLTEST` / `CELLAPN` / `CELLKILL` / `CELLOK` serial commands are
+  bench helpers — decide whether to keep them (useful for field diagnostics) or strip.
+- `sf500_107888` still has `cellular_apn = 'ansar'` in `device_management` and in NVS.
 
 ---
 
