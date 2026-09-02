@@ -152,6 +152,15 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
   }
 }
 
+// loopTask (runs setup()/loop() and everything called from them) gets only
+// 8192 bytes by default. Sensor JSON building + WiFiClientSecure/mbedTLS
+// HTTPS calls run in the same task and can overflow that, corrupting the
+// stack canary (Guru Meditation, no auto-reboot). This is the Arduino-ESP32
+// core's official override point for the loop task's stack size.
+size_t getArduinoLoopTaskStackSize(void) {
+  return 20480;
+}
+
 void setup()
 {
   Serial.begin(9600);
