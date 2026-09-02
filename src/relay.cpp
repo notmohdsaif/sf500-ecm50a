@@ -7,6 +7,8 @@
 #include "logger.h"
 #include "mqtt_handler.h"   // publishRelayStatus()
 #include "cloud.h"           // logDeviceActivity()
+#include "cellular.h"        // detectCellularModem() — CELLDETECT diagnostic
+#include "globals.h"         // cellularCapable
 #include <HTTPClient.h>
 
 // =====================================================
@@ -287,6 +289,12 @@ void handleSerialCommands()
         LOGF("[RAINRESET] Write failed (Modbus code 0x%02X)\n", result);
     }
   }
+  else if (cmd == "CELLDETECT")
+  {
+    LOGLN("[Cellular] Probing modem (~11s if not present)...");
+    cellularCapable = detectCellularModem();
+    LOGF("[Cellular] Modem %s\n", cellularCapable ? "detected" : "not present");
+  }
   else if (cmd == "HELP")
   {
     LOGLN("\n--- Commands ---");
@@ -296,6 +304,7 @@ void handleSerialCommands()
     LOGLN("PLUGON/PLUGOFF - Relay 3 (Tasmota Plug)");
     LOGLN("WIFIINFO     - WiFi status");
     LOGLN("RAINRESET    - Try resetting rain counter (test)");
+    LOGLN("CELLDETECT   - Probe for the onboard 4G modem (test)");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }

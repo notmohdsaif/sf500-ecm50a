@@ -77,6 +77,11 @@ extern DNSServer        dnsServer;
 // WiFi state
 extern WiFiState            wifiState;
 extern std::vector<NetItem> scanList;
+
+// Cellular fallback — true once the onboard 4G modem has been detected.
+// Set by lazy detection on first WiFi failure (see main.cpp loop()), never
+// during a normal boot. Non-4G boards leave this false forever.
+extern bool                 cellularCapable;
 extern bool                 portalMode;
 extern unsigned long        portalConnectStartMs;
 extern unsigned long        portalStartedAt;
