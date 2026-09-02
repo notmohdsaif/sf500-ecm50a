@@ -274,12 +274,23 @@ void persistClock()
 {
   time_t t = time(nullptr);
   if (t < 1000000000) return;
-  char b[16];
-  snprintf(b, sizeof(b), "%ld", (long)t);
-  sdAtomicWrite("/state/clock", (const uint8_t*)b, strlen(b));
+
+  // NVS every call (wear-levelled, designed for frequent small writes);
+  // the SD copy — an atomic temp-write + rename — only hourly, to spare the
+  // card. NVS is the primary source seedClockFromStore() reads first anyway.
   cfgnvs.begin("cfg", false);
   cfgnvs.putULong("epoch", (uint32_t)t);
   cfgnvs.end();
+
+  static unsigned long lastSdFlush = 0;
+  unsigned long nowMs = millis();
+  if (lastSdFlush == 0 || nowMs - lastSdFlush >= 3600000UL)
+  {
+    lastSdFlush = nowMs;
+    char b[16];
+    snprintf(b, sizeof(b), "%ld", (long)t);
+    sdAtomicWrite("/state/clock", (const uint8_t*)b, strlen(b));
+  }
 }
 
 bool seedClockFromStore()
