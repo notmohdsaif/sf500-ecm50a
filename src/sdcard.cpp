@@ -111,3 +111,57 @@ size_t sdFileSize(const char* path)
   f.close();
   return s;
 }
+
+bool sdReadRange(const char* path, size_t offset, size_t maxLen, String& out)
+{
+  out = "";
+  if (!mounted) return false;
+
+  File32 f = sd.open(path, O_RDONLY);
+  if (!f) return false;
+  if (!f.seekSet(offset)) { f.close(); return false; }
+
+  out.reserve(maxLen < 4096 ? maxLen : 4096);
+  uint8_t buf[512];
+  size_t got = 0;
+  while (got < maxLen)
+  {
+    size_t want = maxLen - got;
+    if (want > sizeof(buf)) want = sizeof(buf);
+    int n = f.read(buf, want);
+    if (n <= 0) break;
+    for (int i = 0; i < n; i++) out += (char)buf[i];
+    got += n;
+  }
+  f.close();
+  return true;
+}
+
+bool sdStreamDropPrefix(const char* path, size_t dropBytes)
+{
+  if (!mounted) return false;
+
+  File32 in = sd.open(path, O_RDONLY);
+  if (!in) return false;
+  size_t total = in.fileSize();
+  if (dropBytes >= total) { in.close(); sd.remove(path); return true; }
+  if (!in.seekSet(dropBytes)) { in.close(); return false; }
+
+  String tmp = String(path) + ".tmp";
+  File32 out = sd.open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
+  if (!out) { in.close(); return false; }
+
+  uint8_t buf[512];
+  bool ok = true;
+  int n;
+  while ((n = in.read(buf, sizeof(buf))) > 0)
+    if (out.write(buf, n) != (size_t)n) { ok = false; break; }
+
+  out.sync();
+  out.close();
+  in.close();
+  if (!ok) { sd.remove(tmp.c_str()); return false; }
+
+  sd.remove(path);
+  return sd.rename(tmp.c_str(), path);
+}

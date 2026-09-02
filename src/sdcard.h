@@ -35,3 +35,11 @@ bool     sdAppendLine(const char* path, const String& line);
 
 bool     sdReadFile(const char* path, String& out);
 size_t   sdFileSize(const char* path);
+
+// Read at most `maxLen` bytes of `path` starting at byte `offset` into `out`.
+// For streaming large journals without slurping the whole file into RAM.
+bool     sdReadRange(const char* path, size_t offset, size_t maxLen, String& out);
+
+// Rewrite `path` keeping only bytes [dropBytes, end), streamed through a temp
+// file + rename (power-loss safe, bounded RAM). Used for journal compaction.
+bool     sdStreamDropPrefix(const char* path, size_t dropBytes);

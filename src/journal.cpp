@@ -173,18 +173,21 @@ size_t journalPendingBytes()
 
 int journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends, int maxRecs)
 {
-  String all;
-  if (!sdReadFile(JOURNAL_PATH, all)) return 0;
+  // A batch of maxRecs lines is at most a few KB — read a bounded window, not
+  // the whole (potentially multi-MB) journal.
+  const size_t WINDOW = 8192;
+  String win;
+  if (!sdReadRange(JOURNAL_PATH, fromOffset, WINDOW, win)) return 0;
 
-  const char* p = all.c_str();
-  size_t n = all.length();
+  const char* p = win.c_str();
+  size_t n = win.length();
   int cnt = 0;
-  size_t pos = fromOffset;
+  size_t pos = 0;
   while (cnt < maxRecs && pos < n)
   {
     size_t nl = pos;
     while (nl < n && p[nl] != '\n') nl++;
-    if (nl >= n) break;                   // trailing partial line — stop
+    if (nl >= n) break;                   // no complete line left in the window
 
     String line;
     line.reserve(nl - pos);
@@ -192,7 +195,7 @@ int journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends, int maxR
 
     if (journalDecode(line, recs[cnt]))
     {
-      ends[cnt] = nl + 1;
+      ends[cnt] = fromOffset + nl + 1;    // absolute byte offset past this line
       cnt++;
     }
     pos = nl + 1;
@@ -202,10 +205,8 @@ int journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends, int maxR
 
 void journalCompact()
 {
-  String all;
-  if (!sdReadFile(JOURNAL_PATH, all)) return;
-  String remaining = journalDropPrefix(all, journalReadOffset());
-  if (sdAtomicWrite(JOURNAL_PATH, (const uint8_t*)remaining.c_str(), remaining.length()))
+  // Stream the un-consumed tail into a fresh file — bounded RAM.
+  if (sdStreamDropPrefix(JOURNAL_PATH, journalReadOffset()))
     journalWriteOffset(0);
 }
 
@@ -214,10 +215,17 @@ void journalEnforceRetention()
   size_t sz = sdFileSize(JOURNAL_PATH);
   if (sz <= JOURNAL_MAX_BYTES) return;
 
+  // The eviction pass needs the file in RAM. That is only reachable if the cap
+  // is set streamably-small; at the real 256MB cap this is an "cannot happen on
+  // this hardware" guard — log and let it keep growing rather than crash.
+  if (sz > 2UL * 1024UL * 1024UL)
+  {
+    LOGF("[journal] over cap (%u B) but too large to evict in RAM — skipping\n", (unsigned)sz);
+    return;
+  }
+
   String all;
   if (!sdReadFile(JOURNAL_PATH, all)) return;
-
-  // Keep the whole audit trail; trim sensor_metrics to ~90% of the cap.
   String trimmed = journalEvictSensorMetrics(all, (size_t)(JOURNAL_MAX_BYTES * 0.9));
   if (sdAtomicWrite(JOURNAL_PATH, (const uint8_t*)trimmed.c_str(), trimmed.length()))
   {
