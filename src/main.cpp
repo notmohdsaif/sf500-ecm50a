@@ -12,6 +12,7 @@
 #include "relay.h"
 #include "ota.h"
 #include "cellular.h"
+#include "sdcard.h"
 #include <esp_task_wdt.h>
 
 // =====================================================
@@ -318,6 +319,13 @@ void setup()
   delay(2000);
   LOGLN("\n\n=== ESP32-S3 ECM50-A SF500 System v2.1 ===\n");
   LOGF("[DIAG] Reset: %s | Heap: %d bytes\n", resetReasonStr(esp_reset_reason()), ESP.getFreeHeap());
+
+  // --- microSD (offline buffering + config persistence) ---
+  if (sdInit())
+    LOGF("[SD] card present (CD=%d), free %llu MB\n",
+         sdCardDetect(), sdFreeBytes() / (1024ULL * 1024ULL));
+  else
+    LOGLN("[SD] unavailable — offline buffering + schedule persistence disabled");
 
   // --- Relays ---
   pinMode(RELAY1_PIN, OUTPUT);
