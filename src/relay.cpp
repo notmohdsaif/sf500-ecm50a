@@ -369,6 +369,16 @@ void handleSerialCommands()
                                   : String("[Cellular] APN cleared"));
     }
   }
+  else if (cmd == "CELLKILL")
+  {
+    LOGLN("[Cellular] Simulating link loss (modem radio OFF)");
+    setModemRadio(false);
+  }
+  else if (cmd == "CELLOK")
+  {
+    LOGLN("[Cellular] Restoring modem radio");
+    setModemRadio(true);
+  }
   else if (cmd == "HELP")
   {
     LOGLN("\n--- Commands ---");
@@ -381,6 +391,7 @@ void handleSerialCommands()
     LOGLN("CELLDETECT   - Probe for the onboard 4G modem (test)");
     LOGLN("CELLTEST     - Bring up 4G + MQTT-over-cellular (test)");
     LOGLN("CELLAPN [x]  - Show/set/clear the persisted cellular APN");
+    LOGLN("CELLKILL/CELLOK - Sim link loss on/off (modem radio, test)");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }

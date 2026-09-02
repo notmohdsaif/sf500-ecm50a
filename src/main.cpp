@@ -549,6 +549,38 @@ void loop()
     }
   }
 
+  // Cellular link health: if the PDP session is gone (SIM pulled, carrier
+  // dropped us, data plan expired) and stays gone, stop treating cellular as
+  // our transport. The down-switch block + tryCellularFallback() then either
+  // re-establish it or, failing that, shouldOpenPortalOffline() opens the AP.
+  static unsigned long cellDeadSince = 0;
+  static unsigned long lastCellCheck = 0;
+  if (activeTransport == TRANSPORT_CELLULAR && now - lastCellCheck >= 20000)
+  {
+    lastCellCheck = now;
+    if (modem.isGprsConnected())
+    {
+      cellDeadSince = 0;
+    }
+    else
+    {
+      if (cellDeadSince == 0)
+      {
+        cellDeadSince = now;
+        LOGLN("[Cellular] Data session lost — watching...");
+      }
+      else if (now - cellDeadSince >= 40000)
+      {
+        LOGLN("[Cellular] Data session dead >40s — dropping to WiFi/portal");
+        modem.gprsDisconnect();
+        activeTransport = TRANSPORT_WIFI;   // modem stays; cellularCapable unchanged
+        mqttClient.disconnect();
+        mqttClient.setClient(espClient);
+        cellDeadSince = 0;
+      }
+    }
+  }
+
   // --- Become fully online on whatever transport we have (once per boot) ---
   if (startupTime == 0 &&
       (WiFi.status() == WL_CONNECTED || activeTransport == TRANSPORT_CELLULAR))

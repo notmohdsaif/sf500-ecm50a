@@ -68,6 +68,15 @@ bool connectCellularData(const char *apn)
 
   modem.init();
 
+  // Fast bail on SIM problems (absent / PIN-locked) — no point waiting 30s
+  // for a network registration that can't happen.
+  SimStatus sim = modem.getSimStatus();
+  if (sim != SIM_READY)
+  {
+    LOGF("[Cellular] FAIL: SIM not ready (status %d)\n", (int)sim);
+    return false;
+  }
+
   if (!modem.waitForNetwork(30000))
   {
     LOGLN("[Cellular] FAIL: no network registration");
@@ -139,6 +148,15 @@ bool syncTimeFromModem()
   LOGF("[Cellular] Time set from modem: %04d-%02d-%02d %02d:%02d:%02d UTC%+.1f\n",
        y, mo, d, h, mi, s, tz);
   return true;
+}
+
+void setModemRadio(bool on)
+{
+  if (!on)
+    modem.gprsDisconnect();
+  modem.sendAT(on ? "+CFUN=1" : "+CFUN=0");
+  modem.waitResponse(10000L);
+  LOGF("[Cellular] Modem radio %s\n", on ? "ON" : "OFF");
 }
 
 int cellularSupabaseRequest(const char *method, const String &url,

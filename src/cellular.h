@@ -32,6 +32,10 @@ bool connectCellularData(const char *apn);
 // Returns true if the clock was set to a plausible value.
 bool syncTimeFromModem();
 
+// Bench-test helper: toggle the modem's radio (AT+CFUN 0/1) to simulate the
+// SIM being pulled / coverage lost without physical access. on=false kills it.
+void setModemRadio(bool on);
+
 // One Supabase REST call over cellular: software TLS (ESP32 mbedTLS) on top of
 // the modem's raw TCP, driven by ArduinoHttpClient (ESP32's HTTPClient can't
 // take a non-WiFiClient). Adds the apikey + Bearer auth headers itself.
