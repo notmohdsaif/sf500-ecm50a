@@ -14,6 +14,7 @@
 #include "cellular.h"
 #include "sdcard.h"
 #include "persist.h"
+#include "backfill.h"
 #include <esp_task_wdt.h>
 
 // =====================================================
@@ -832,6 +833,10 @@ void loop()
     fetchSchedules();
     lastScheduleFetch = now;
   }
+
+  // Drain the SD telemetry journal to Supabase (self-rate-limited, bounded,
+  // skipped mid-dose).
+  backfillTick();
 
   // --- Tasmota plug state poll (HTTP transport only; inert on MQTT-transport devices) ---
   if (plugUseHttp && now - lastPlugHttpPoll >= PLUG_HTTP_POLL_INTERVAL)

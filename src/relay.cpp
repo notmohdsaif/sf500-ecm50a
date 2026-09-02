@@ -6,9 +6,11 @@
 #include "relay.h"
 #include "logger.h"
 #include "mqtt_handler.h"   // publishRelayStatus()
-#include "cloud.h"           // logDeviceActivity()
+#include "cloud.h"           // logDeviceActivity(), isoNow()
 #include "cellular.h"        // detectCellularModem() — CELLDETECT diagnostic
 #include "globals.h"         // cellularCapable
+#include "journal.h"         // journalAppend()
+#include "sdcard.h"          // sdMounted()
 #include <HTTPClient.h>
 
 // =====================================================
@@ -31,27 +33,32 @@ void writeRelay(uint8_t num, bool state)
   // this is how a relay command gets confirmed and the card timer rendered.
   publishRelayStatus();
 
-  // relay_metrics is an audit-only Supabase write; leave it WiFi-only (matches
-  // the OTA / relay-logging scope — it just doesn't accrue while on cellular).
-  // haveUplink() also skips it during the offline-debounce window so a doomed
-  // TLS attempt never stalls the loop. Task 3.3 routes this through the SD journal.
+  // relay_metrics: buffer-then-drain through the SD journal when a card is
+  // present (so it also accrues on cellular and through an outage); otherwise
+  // the original WiFi-only direct POST, skipped during the offline debounce.
+  StaticJsonDocument<160> doc;
+  char relayId[10];
+  sprintf(relayId, "relay_%02d", num);
+  doc["device"]   = deviceName;
+  doc["relay_id"] = relayId;
+  doc["status"]   = state ? 1 : 0;
+  String rec = isoNow();
+  if (rec.length()) doc["recorded_at"] = rec;
+  String payload;
+  serializeJson(doc, payload);
+
+  if (sdMounted())
+  {
+    journalAppend("relay_metrics", payload);
+    return;
+  }
+
   if (WiFi.status() == WL_CONNECTED && haveUplink())
   {
     HTTPClient http;
     String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
-
     if (http.begin(secureClient, url))
     {
-      StaticJsonDocument<128> doc;
-      char relayId[10];
-      sprintf(relayId, "relay_%02d", num);
-      doc["device"]   = deviceName;
-      doc["relay_id"] = relayId;
-      doc["status"]   = state ? 1 : 0;
-
-      String payload;
-      serializeJson(doc, payload);
-
       http.addHeader("Content-Type", "application/json");
       http.addHeader("apikey", SUPABASE_KEY);
       http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);

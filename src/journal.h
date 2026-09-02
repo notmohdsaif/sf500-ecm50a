@@ -30,3 +30,38 @@ String journalEncode(time_t t, bool approx, const char* tbl, const String& rowJs
 // Parse one line. Returns false on a JSON error, missing field, or an
 // unrecognised `tbl` (also catches a torn/partial trailing line on replay).
 bool journalDecode(const String& line, JournalRec& out);
+
+// --- Pure helpers, exposed for host tests ---------------------------------
+
+// Content of `all` after byte `offset`, snapped forward to the next line start
+// (drops the consumed prefix). Empty if the offset is at/after the last line.
+String journalDropPrefix(const String& all, size_t offset);
+
+// Rewrite `all` keeping every activity_log + relay_metrics line and only the
+// newest sensor_metrics lines that fit under `targetBytes`. Order preserved.
+String journalEvictSensorMetrics(const String& all, size_t targetBytes);
+
+// --- Device-side (SD-backed); not built in the native host-test env -------
+#ifndef UNIT_TEST
+
+#define JOURNAL_PATH               "/buffer/pending.ndjson"
+#define JOURNAL_OFFSET_PATH        "/buffer/offset"
+#define JOURNAL_COMPACT_THRESHOLD  (512UL * 1024UL)          // compact once the offset passes this
+#define JOURNAL_MAX_BYTES          (256UL * 1024UL * 1024UL) // hard retention cap
+
+// Append one record, stamped with time(nullptr) + clockIsApprox(). false if no SD.
+bool   journalAppend(const char* tbl, const String& rowJson);
+
+size_t journalReadOffset();
+void   journalWriteOffset(size_t off);
+size_t journalPendingBytes();                                 // fileSize - offset
+
+// Decode up to maxRecs complete lines from `fromOffset`. ends[i] = byte offset
+// just past line i (what the caller commits after a successful POST). A torn
+// trailing line is ignored. Returns the count decoded.
+int    journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends, int maxRecs);
+
+void   journalCompact();            // drop [0, offset); reset offset to 0
+void   journalEnforceRetention();   // evict oldest sensor_metrics if over the cap
+
+#endif  // UNIT_TEST

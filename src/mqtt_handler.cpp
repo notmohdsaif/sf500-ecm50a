@@ -6,7 +6,9 @@
 #include "mqtt_handler.h"
 #include "logger.h"
 #include "relay.h"    // writeRelay()
-#include "cloud.h"    // logDeviceActivity()
+#include "cloud.h"    // logDeviceActivity(), isoNow()
+#include "journal.h"  // journalAppend()
+#include "sdcard.h"   // sdMounted()
 #include <HTTPClient.h>
 
 // =====================================================
@@ -401,20 +403,28 @@ static bool plugHttpGet(const String &cmnd, String &body)
 // Shared by the stat/POWER handler (MQTT) and the HTTP command / poll paths.
 void logR3Transition(bool newState)
 {
+  StaticJsonDocument<160> logDoc;
+  logDoc["device"]   = deviceName;
+  logDoc["relay_id"] = "relay_03";
+  logDoc["status"]   = newState ? 1 : 0;
+  String rec = isoNow();
+  if (rec.length()) logDoc["recorded_at"] = rec;
+  String postPayload;
+  serializeJson(logDoc, postPayload);
+
+  if (sdMounted())
+  {
+    journalAppend("relay_metrics", postPayload);
+    return;
+  }
+
   if (WiFi.status() != WL_CONNECTED || !haveUplink())
-    return;   // Task 3.3 routes this through the SD journal
+    return;
 
   HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
   if (!http.begin(secureClient, url))
     return;
-
-  StaticJsonDocument<128> logDoc;
-  logDoc["device"]   = deviceName;
-  logDoc["relay_id"] = "relay_03";
-  logDoc["status"]   = newState ? 1 : 0;
-  String postPayload;
-  serializeJson(logDoc, postPayload);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
@@ -549,27 +559,6 @@ void writePlugRelay(bool state)
   }
 
   r3State = state;
-
-  if (WiFi.status() == WL_CONNECTED && haveUplink())
-  {
-    HTTPClient http;
-    String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
-    if (http.begin(secureClient, url))
-    {
-      StaticJsonDocument<128> logDoc;
-      logDoc["device"]   = deviceName;
-      logDoc["relay_id"] = "relay_03";
-      logDoc["status"]   = state ? 1 : 0;
-      String payload;
-      serializeJson(logDoc, payload);
-      http.addHeader("Content-Type", "application/json");
-      http.addHeader("apikey", SUPABASE_KEY);
-      http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-      http.setTimeout(4000);   // was 15s — relay metrics are audit-only, don't block the loop
-      http.POST(payload);
-      http.end();
-    }
-  }
-
+  logR3Transition(state);   // journal-or-POST the relay_metrics row (one path)
   publishRelayStatus();
 }

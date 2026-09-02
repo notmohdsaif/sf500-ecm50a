@@ -9,7 +9,25 @@
 #include "mqtt_handler.h"
 #include "cellular.h"   // cellularSupabaseRequest() — cellular-fallback transport
 #include "persist.h"    // persistConfig() / persistSchedules() — local mirror for offline cold-start
+#include "journal.h"    // journalAppend() — SD telemetry buffering
+#include "sdcard.h"     // sdMounted()
 #include <HTTPClient.h>
+
+// ISO-8601 (+08:00) timestamp for `recorded_at` — the real capture time, so a
+// row replayed from the SD journal after a long outage doesn't collapse to the
+// reconnect instant. Empty string until the clock is valid.
+String isoNow()
+{
+  time_t t = time(nullptr);
+  if (t < 1000000000) return String();
+  struct tm ti;
+  localtime_r(&t, &ti);
+  char b[30];
+  sprintf(b, "%04d-%02d-%02dT%02d:%02d:%02d+08:00",
+          ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+          ti.tm_hour, ti.tm_min, ti.tm_sec);
+  return String(b);
+}
 
 // =====================================================
 // NTP TIME SYNC
@@ -224,7 +242,7 @@ void uploadSensorReadings()
 
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
-  DynamicJsonDocument doc(768);
+  DynamicJsonDocument doc(1536);
   if (doc.capacity() == 0) { LOGLN("[UPLOAD] JSON alloc failed (low heap)"); return; }
   JsonArray arr = doc.to<JsonArray>();
 
@@ -288,6 +306,23 @@ void uploadSensorReadings()
     rn["device"]    = deviceName;
     rn["sensor_id"] = rnId;
     rn["value"]     = serialized(String(sensors.rainfall, 1));
+  }
+
+  String rec = isoNow();
+  if (rec.length())
+    for (JsonObject row : arr)
+      row["recorded_at"] = rec;
+
+  // Buffer-then-drain: one journal line per row while an SD card is present.
+  if (sdMounted())
+  {
+    for (JsonObject row : arr)
+    {
+      String rj;
+      serializeJson(row, rj);
+      journalAppend("sensor_metrics", rj);
+    }
+    return;
   }
 
   String payload;
@@ -841,18 +876,28 @@ void fetchSchedules()
 void logDeviceActivity(const char *category, const char *action)
 {
   if (!isRegistered || deviceName.isEmpty()) return;
-  if (!haveUplink()) return;   // Task 3.3 replaces this with a journal append
 
   String url = String(SUPABASE_URL) + "/rest/v1/activity_log";
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<320> doc;
   doc["device"]   = deviceName;
   doc["category"] = category;
   doc["action"]   = action;
   doc["source"]   = "device";
+  String rec = isoNow();
+  if (rec.length()) doc["recorded_at"] = rec;
 
   String payload;
   serializeJson(doc, payload);
+
+  // Buffer-then-drain: while an SD card is present every row goes through the
+  // journal (backfill.cpp POSTs it), so a failed live POST is never lost either.
+  if (sdMounted())
+  {
+    journalAppend("activity_log", payload);
+    return;
+  }
+  if (!haveUplink()) return;
 
   if (activeTransport == TRANSPORT_CELLULAR)
   {
