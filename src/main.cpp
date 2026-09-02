@@ -715,6 +715,15 @@ void loop()
       lastScheduleCheck = now;
     }
 
+    // Sensor upload must run offline too — when a card is present it journals
+    // the readings for later backfill instead of POSTing (see cloud.cpp).
+    if (now - lastSensorUpload >= SENSOR_UPLOAD_INTERVAL)
+    {
+      if (sensors.hasData)
+        uploadSensorReadings();
+      lastSensorUpload = now;
+    }
+
     // Snapshot the wall clock every 5 min so a power cut during a blackout
     // reboots with a clock that is at worst one interval stale.
     static unsigned long lastClockPersist = 0;
@@ -809,13 +818,6 @@ void loop()
   }
 
   // --- Periodic tasks (backend-facing; the control plane ran earlier) ---
-  if (now - lastSensorUpload >= SENSOR_UPLOAD_INTERVAL)
-  {
-    if (sensors.hasData)
-      uploadSensorReadings();
-    lastSensorUpload = now;
-  }
-
   if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL)
   {
     updateDeviceStatus("online");

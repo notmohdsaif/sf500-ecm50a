@@ -238,7 +238,9 @@ void uploadSensorReadings()
 {
   if (!sensors.hasData)
     return;
-  if (!haveUplink()) return;
+  // NB: no haveUplink() gate here — when an SD card is present this journals
+  // the readings offline for later backfill. The no-card path checks haveUplink
+  // itself before its direct POST.
 
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
@@ -324,6 +326,8 @@ void uploadSensorReadings()
     }
     return;
   }
+
+  if (!haveUplink()) return;   // no card, no uplink — drop
 
   String payload;
   serializeJson(arr, payload);
