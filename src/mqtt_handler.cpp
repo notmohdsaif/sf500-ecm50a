@@ -15,47 +15,47 @@
 
 void reconnectMQTT()
 {
-  for (int i = 0; i < 5 && !mqttClient.connected(); i++)
+  // Non-blocking: one connect attempt per call, backed off. The control plane
+  // (dosing, sensors, relay timers) keeps running between attempts — a dead
+  // broker must never stall loop().
+  static unsigned long lastTry = 0;
+  if (mqttClient.connected()) return;
+  if (millis() - lastTry < 5000UL) return;
+  lastTry = millis();
+
+  String clientId = "SF500_" + lastSix;
+  if (!mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS))
   {
-    String clientId = "SF500_" + lastSix;
-    if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS))
-    {
-      mqttClient.subscribe(topicRelayUpdate.c_str());
-      mqttClient.subscribe(topicWifiCmd.c_str());
-      mqttClient.subscribe(topicDeviceCmd.c_str());
-      if (!plugUseHttp && tasmotaPlugEnabled && tasmotaPlugTopic.length() > 0)
-      {
-        mqttClient.subscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
-        // Query current plug state so r3State reflects reality after reconnect
-        mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Power").c_str(), "");
-      }
-      publishRelayStatus();
-
-      // Publish wifi info immediately so dashboard updates without waiting for sensor cycle
-      if (WiFi.status() == WL_CONNECTED)
-      {
-        StaticJsonDocument<128> doc;
-        JsonObject wifiObj = doc.createNestedObject("wifi");
-        wifiObj["ssid"] = WiFi.SSID();
-        wifiObj["rssi"] = WiFi.RSSI();
-        wifiObj["ip"]   = WiFi.localIP().toString();
-        char buf[128];
-        serializeJson(doc, buf);
-        mqttClient.publish(mqttTopicData.c_str(), buf);
-      }
-
-      LOGLN("MQTT connected");
-      return;
-    }
-    // Keep the relay auto-off timer running even while the broker is slow to
-    // accept us — otherwise a timed relay can overrun its duration during a
-    // reconnect storm.
-    for (int w = 0; w < 10; w++)
-    {
-      checkRelayTimers();
-      delay(200);
-    }
+    noteMqttState(false);
+    return;
   }
+  noteMqttState(true);
+
+  mqttClient.subscribe(topicRelayUpdate.c_str());
+  mqttClient.subscribe(topicWifiCmd.c_str());
+  mqttClient.subscribe(topicDeviceCmd.c_str());
+  if (!plugUseHttp && tasmotaPlugEnabled && tasmotaPlugTopic.length() > 0)
+  {
+    mqttClient.subscribe(("stat/" + tasmotaPlugTopic + "/POWER").c_str());
+    // Query current plug state so r3State reflects reality after reconnect
+    mqttClient.publish(("cmnd/" + tasmotaPlugTopic + "/Power").c_str(), "");
+  }
+  publishRelayStatus();
+
+  // Publish wifi info immediately so dashboard updates without waiting for sensor cycle
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    StaticJsonDocument<128> doc;
+    JsonObject wifiObj = doc.createNestedObject("wifi");
+    wifiObj["ssid"] = WiFi.SSID();
+    wifiObj["rssi"] = WiFi.RSSI();
+    wifiObj["ip"]   = WiFi.localIP().toString();
+    char buf[128];
+    serializeJson(doc, buf);
+    mqttClient.publish(mqttTopicData.c_str(), buf);
+  }
+
+  LOGLN("MQTT connected");
 }
 
 // =====================================================
@@ -401,8 +401,8 @@ static bool plugHttpGet(const String &cmnd, String &body)
 // Shared by the stat/POWER handler (MQTT) and the HTTP command / poll paths.
 void logR3Transition(bool newState)
 {
-  if (WiFi.status() != WL_CONNECTED)
-    return;
+  if (WiFi.status() != WL_CONNECTED || !haveUplink())
+    return;   // Task 3.3 routes this through the SD journal
 
   HTTPClient http;
   String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
@@ -550,7 +550,7 @@ void writePlugRelay(bool state)
 
   r3State = state;
 
-  if (WiFi.status() == WL_CONNECTED)
+  if (WiFi.status() == WL_CONNECTED && haveUplink())
   {
     HTTPClient http;
     String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";

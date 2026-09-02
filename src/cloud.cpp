@@ -52,6 +52,7 @@ void syncTimeWithNTP()
 
 void registerDevice()
 {
+  if (!haveUplink()) return;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
   int    code;
@@ -75,6 +76,7 @@ void registerDevice()
     http.end();
   }
   LOGF("[REG] HTTP code: %d\n", code);
+  noteUplinkResult(code == 200);
 
   if (code == 200)
   {
@@ -139,6 +141,7 @@ void uploadSensorConfig()
 {
   if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
     return;
+  if (!haveUplink()) return;
 
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
@@ -203,6 +206,7 @@ void uploadSensorConfig()
     http.end();
   }
 
+  noteUplinkResult(code == 200 || code == 204);
   LOGLN(code == 200 || code == 204 ? "Sensor config uploaded" : "Config upload failed");
 }
 
@@ -214,6 +218,7 @@ void uploadSensorReadings()
 {
   if (!sensors.hasData)
     return;
+  if (!haveUplink()) return;
 
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
@@ -306,6 +311,7 @@ void uploadSensorReadings()
     http.end();
   }
 
+  noteUplinkResult(code == 200 || code == 201);
   if (code == 200 || code == 201)
     LOGF("Uploaded %u readings\n", (unsigned)arr.size());
 }
@@ -316,6 +322,7 @@ void uploadSensorReadings()
 
 void updateDeviceStatus(const char *status)
 {
+  if (!haveUplink()) return;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
   StaticJsonDocument<128> doc;
@@ -339,7 +346,8 @@ void updateDeviceStatus(const char *status)
   if (activeTransport == TRANSPORT_CELLULAR)
   {
     String resp;
-    cellularSupabaseRequest("PATCH", url, payload, "application/json", nullptr, resp);
+    int code = cellularSupabaseRequest("PATCH", url, payload, "application/json", nullptr, resp);
+    noteUplinkResult(code >= 200 && code < 300);
     return;
   }
 
@@ -350,7 +358,8 @@ void updateDeviceStatus(const char *status)
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.setTimeout(6000);   // runs every 30s in loop() — keep well under MQTT keepalive
-  http.PATCH(payload);
+  int code = http.PATCH(payload);
+  noteUplinkResult(code >= 200 && code < 300);
   http.end();
 }
 
@@ -361,6 +370,7 @@ void updateDeviceStatus(const char *status)
 static void fetchRefillTankMax()
 {
   if (!wlSensorFound) return;
+  if (!haveUplink()) return;
 
   char sensorId[8];
   sprintf(sensorId, "wl_%02d", wlSensorId);
@@ -388,6 +398,7 @@ static void fetchRefillTankMax()
       response = http.getString();
     http.end();
   }
+  noteUplinkResult(code == 200);
   if (code != 200) return;
 
   StaticJsonDocument<128> doc;
@@ -408,6 +419,7 @@ static void fetchRefillTankMax()
 
 void fetchDeviceConfig()
 {
+  if (!haveUplink()) return;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
                "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode,tasmota_plug_host,cellular_apn";
@@ -431,6 +443,7 @@ void fetchDeviceConfig()
       response = http.getString();
     http.end();
   }
+  noteUplinkResult(code == 200);
   if (code != 200) return;
 
   StaticJsonDocument<768> doc;
@@ -719,6 +732,7 @@ static void syncR3TimersToTasmota()
 
 void fetchSchedules()
 {
+  if (!haveUplink()) return;
   String url = String(SUPABASE_URL) +
                "/rest/v1/relay_schedule?device=eq." + deviceName +
                "&status=eq.true&select=*";
@@ -742,6 +756,7 @@ void fetchSchedules()
       response = http.getString();
     http.end();
   }
+  noteUplinkResult(code == 200);
   if (code != 200) return;
 
   DynamicJsonDocument doc(4096);
@@ -809,6 +824,7 @@ void fetchSchedules()
 void logDeviceActivity(const char *category, const char *action)
 {
   if (!isRegistered || deviceName.isEmpty()) return;
+  if (!haveUplink()) return;   // Task 3.3 replaces this with a journal append
 
   String url = String(SUPABASE_URL) + "/rest/v1/activity_log";
 
@@ -824,8 +840,9 @@ void logDeviceActivity(const char *category, const char *action)
   if (activeTransport == TRANSPORT_CELLULAR)
   {
     String resp;
-    cellularSupabaseRequest("POST", url, payload, "application/json",
-                            "return=minimal", resp);
+    int code = cellularSupabaseRequest("POST", url, payload, "application/json",
+                                       "return=minimal", resp);
+    noteUplinkResult(code >= 200 && code < 300);
     return;
   }
 
@@ -836,6 +853,7 @@ void logDeviceActivity(const char *category, const char *action)
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.addHeader("Prefer",        "return=minimal");
   http.setTimeout(3000);   // keep well under MQTT keepalive — this can run outside boot (e.g. rescan)
-  http.POST(payload);
+  int code = http.POST(payload);
+  noteUplinkResult(code >= 200 && code < 300);
   http.end();
 }

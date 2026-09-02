@@ -33,7 +33,9 @@ void writeRelay(uint8_t num, bool state)
 
   // relay_metrics is an audit-only Supabase write; leave it WiFi-only (matches
   // the OTA / relay-logging scope — it just doesn't accrue while on cellular).
-  if (WiFi.status() == WL_CONNECTED)
+  // haveUplink() also skips it during the offline-debounce window so a doomed
+  // TLS attempt never stalls the loop. Task 3.3 routes this through the SD journal.
+  if (WiFi.status() == WL_CONNECTED && haveUplink())
   {
     HTTPClient http;
     String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
