@@ -89,6 +89,11 @@ extern bool                 cellularCapable;
 // (cellular.cpp). The state machine that flips this lives in main.cpp loop().
 enum NetworkTransport { TRANSPORT_WIFI, TRANSPORT_CELLULAR };
 extern NetworkTransport     activeTransport;
+
+// device_management.cellular_apn — APN for this unit's onboard 4G SIM.
+// Empty => cellular fallback stays inert even if the modem is present.
+// Refreshed by fetchDeviceConfig().
+extern String               cellularApn;
 extern bool                 portalMode;
 extern unsigned long        portalConnectStartMs;
 extern unsigned long        portalStartedAt;

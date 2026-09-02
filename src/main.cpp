@@ -29,6 +29,7 @@ DNSServer dnsServer;
 WiFiState wifiState = STATE_PORTAL;
 bool cellularCapable = false;
 NetworkTransport activeTransport = TRANSPORT_WIFI;
+String cellularApn = "";
 std::vector<NetItem> scanList;
 bool portalMode = false;
 unsigned long portalConnectStartMs = 0;

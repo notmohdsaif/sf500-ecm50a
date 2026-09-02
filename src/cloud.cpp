@@ -410,7 +410,7 @@ void fetchDeviceConfig()
 {
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
-               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode,tasmota_plug_host";
+               "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode,tasmota_plug_host,cellular_apn";
 
   int    code;
   String response;
@@ -610,6 +610,20 @@ void fetchDeviceConfig()
 
       LOGLNS(plugUseHttp ? "[CONFIG] Plug transport: HTTP " + plugHttpHost
                          : String("[CONFIG] Plug transport: MQTT"));
+    }
+  }
+
+  // Cellular fallback APN — presence of a value is what arms the fallback
+  // (see the state machine in main.cpp loop()).
+  {
+    String newApn = dev["cellular_apn"].isNull() ? String("")
+                                                 : dev["cellular_apn"].as<String>();
+    newApn.trim();
+    if (newApn != cellularApn)
+    {
+      cellularApn = newApn;
+      LOGLNS(cellularApn.length() ? "[CONFIG] Cellular APN: " + cellularApn
+                                  : String("[CONFIG] Cellular APN: (cleared)"));
     }
   }
 
