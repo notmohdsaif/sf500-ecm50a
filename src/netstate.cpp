@@ -7,7 +7,11 @@
 
 RunState g_runState = RS_BOOT;
 
-static bool    uplinkOk   = false;
+// Optimistic at boot: the first REST call is allowed through, and a genuine
+// blackout debounces it false after UPLINK_FAIL_DEBOUNCE failures. Starting
+// false would make every gated call skip before the first success and the
+// device could never come online.
+static bool    uplinkOk   = true;
 static uint8_t failStreak = 0;
 static bool    cfgLoaded  = false;
 

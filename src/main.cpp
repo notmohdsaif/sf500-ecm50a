@@ -648,16 +648,45 @@ void loop()
     portalAutoOpened = false;
   }
 
-  // No uplink at all (cellular fallback didn't take) — skip the periodic work.
+  // --- Run-state (observability only) ---
+  if (portalMode)                 setRunState(RS_PROVISIONING);
+  else if (haveUplink())          setRunState(RS_ONLINE);
+  else if (configLoaded())        setRunState(RS_OFFLINE_AUTONOMOUS);
+
+  // --- Control plane — runs EVERY loop, online or not, as long as a config
+  //     (cloud, or local NVS/SD) has been loaded. Dosing, water-in (WL)
+  //     detection and refill cutoff must not stop during a WiFi + cellular
+  //     blackout, nor on a cold boot with no connectivity. Everything below
+  //     that needs the backend is haveUplink()-gated and no-ops when offline. ---
+  if (configLoaded())
+  {
+    if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
+    {
+      readSensors();
+      lastSensorRead = now;
+      checkRefillCutoff();
+      if (autoDosing && ecSensorFound)
+        checkAutoDosing();
+    }
+    if (now - lastScheduleCheck >= SCHEDULE_CHECK_INTERVAL)
+    {
+      checkSchedules();
+      lastScheduleCheck = now;
+    }
+  }
+
+  // No uplink at all (cellular fallback didn't take) — the control plane above
+  // already ran. Skip the backend-facing periodic work; stay tight if we're
+  // running autonomously so dosing keeps its cadence.
   if (WiFi.status() != WL_CONNECTED && activeTransport != TRANSPORT_CELLULAR)
   {
-    delay(500);
+    delay(configLoaded() ? 20 : 500);
     return;
   }
 
   if (!isRegistered)
   {
-    delay(1000);
+    delay(configLoaded() ? 20 : 1000);
     return;
   }
 
@@ -729,16 +758,7 @@ void loop()
     }
   }
 
-  // --- Periodic tasks ---
-  if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
-  {
-    readSensors();
-    lastSensorRead = now;
-    checkRefillCutoff();
-    if (autoDosing && ecSensorFound)
-      checkAutoDosing();
-  }
-
+  // --- Periodic tasks (backend-facing; the control plane ran earlier) ---
   if (now - lastSensorUpload >= SENSOR_UPLOAD_INTERVAL)
   {
     if (sensors.hasData)
@@ -762,12 +782,6 @@ void loop()
   {
     fetchSchedules();
     lastScheduleFetch = now;
-  }
-
-  if (now - lastScheduleCheck >= SCHEDULE_CHECK_INTERVAL)
-  {
-    checkSchedules();
-    lastScheduleCheck = now;
   }
 
   // --- Tasmota plug state poll (HTTP transport only; inert on MQTT-transport devices) ---
