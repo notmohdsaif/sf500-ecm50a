@@ -10,6 +10,7 @@
 #include "cellular_cert.h"
 #include <SSLClient.h>
 #include <ArduinoHttpClient.h>
+#include <esp_task_wdt.h>
 
 HardwareSerial modemSerial(2); // UART2 — modem only
 TinyGsm        modem(modemSerial);
@@ -62,35 +63,63 @@ bool detectCellularModem()
   return false;
 }
 
+// One data-session attempt against the modem's current state. Fast-fails on a
+// not-ready SIM (absent / PIN-locked) so we don't sit 30s in waitForNetwork().
+static bool bringUpDataSession(const char *apn, uint32_t netTimeoutMs)
+{
+  SimStatus sim = modem.getSimStatus();
+  if (sim != SIM_READY)
+  {
+    LOGF("[Cellular] SIM not ready (status %d)\n", (int)sim);
+    return false;
+  }
+  if (!modem.waitForNetwork(netTimeoutMs))
+  {
+    LOGLN("[Cellular] no network registration");
+    return false;
+  }
+  if (!modem.gprsConnect(apn, "", ""))
+  {
+    LOGLN("[Cellular] GPRS/PDP attach failed");
+    return false;
+  }
+  return true;
+}
+
 bool connectCellularData(const char *apn)
 {
   LOGF("[Cellular] Bringing up data session (APN=%s)...\n", apn);
 
+  esp_task_wdt_reset();
   modem.init();
+  bool ok = bringUpDataSession(apn, 30000);
 
-  // Fast bail on SIM problems (absent / PIN-locked) — no point waiting 30s
-  // for a network registration that can't happen.
-  SimStatus sim = modem.getSimStatus();
-  if (sim != SIM_READY)
+  // Retry once behind a full modem reboot. AT+CFUN=1,1 re-scans the SIM
+  // (needed after a hot-swap — modem.init() alone won't notice a re-inserted
+  // card) and recovers from AT+CFUN=0. Rate-limited so a permanently SIM-less
+  // unit doesn't reboot the modem on every 60s retry.
+  if (!ok)
   {
-    LOGF("[Cellular] FAIL: SIM not ready (status %d)\n", (int)sim);
-    return false;
+    static unsigned long lastRestart = 0;
+    unsigned long nowMs = millis();
+    if (lastRestart == 0 || nowMs - lastRestart >= 120000UL)
+    {
+      lastRestart = nowMs;
+      LOGLN("[Cellular] Rebooting modem and retrying...");
+      esp_task_wdt_reset();
+      modem.restart();
+      esp_task_wdt_reset();
+      ok = bringUpDataSession(apn, 20000);
+    }
   }
 
-  if (!modem.waitForNetwork(30000))
+  if (!ok)
   {
-    LOGLN("[Cellular] FAIL: no network registration");
-    return false;
-  }
-
-  if (!modem.gprsConnect(apn, "", ""))
-  {
-    LOGLN("[Cellular] FAIL: GPRS/PDP attach failed");
+    LOGLN("[Cellular] FAIL: no data session");
     return false;
   }
 
   cellularSecureClient.setCACert(CELLULAR_CA_CERT);
-
   LOGF("[Cellular] Data connected, IP=%s\n", modem.localIP().toString().c_str());
   return true;
 }

@@ -573,10 +573,12 @@ void loop()
       {
         LOGLN("[Cellular] Data session dead >40s — dropping to WiFi/portal");
         modem.gprsDisconnect();
-        activeTransport = TRANSPORT_WIFI;   // modem stays; cellularCapable unchanged
+        activeTransport = TRANSPORT_WIFI;   // modem stays powered; cellularCapable unchanged
         mqttClient.disconnect();
         mqttClient.setClient(espClient);
         cellDeadSince = 0;
+        // connectCellularData() will reboot the modem on its next retry so a
+        // re-inserted SIM gets re-scanned.
       }
     }
   }
