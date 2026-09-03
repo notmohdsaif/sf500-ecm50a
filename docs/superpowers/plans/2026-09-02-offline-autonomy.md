@@ -45,11 +45,24 @@ SUCCESS (Flash 31.5% -> 33.4%, RAM +1%); `pio test -e native` 15/15.
   2026-09-03** (migration `offline_recorded_at`; nullable `recorded_at` on
   sensor_metrics / activity_log / relay_metrics + PostgREST cache reload);
   `src/backfill.{h,cpp}` bounded transport-aware drain, wired into `loop()`.
+- **Task 0.4 (SD bench verification) — DONE 2026-09-03 on sf500_107888.** Pin
+  map SCK10/MISO9/MOSI46/CS1/CD3 correct; mounts first try at 20 MHz
+  SHARED_SPI; CD polarity confirmed (GPIO3 LOW = card seated). The bench card
+  shipped exFAT (cardBegin OK, volumeBegin fails, sdErrorCode 0) — added
+  `sdFormatFat32()` + `SDFORMAT CONFIRM` serial command (reuses the probe's
+  card object; deinits the task-WDT around the multi-minute blocking format).
+  Post-format: FAT32, 15185 MB free, clean reboot mounts first try, and rows
+  buffered pre-cellular drained to Supabase on reconnect (recorded_at path
+  verified live). Firmware flashed to the unit is `dee3c20`.
 
-**Not done:**
-- **Phase 5** entirely — bench soak on `sf500_107888` (stack high-water, card
-  pull, power-cut-during-write, 24-48h induced-outage soak). The unit is on
-  cellular spike firmware and in use; needs the hardware.
+**Not done (Phase 5 remainder):**
+- Stack high-water check (`uxTaskGetStackHighWaterMark` on loopTask — the
+  v1.2.5 crash class: SdFat + ArduinoJson + mbedTLS all on loopTask@20480)
+  through a full dose cycle + a backfill drain.
+- Card-pull fault injection (pull mid-run: no crash, `sdMounted()` false,
+  control plane keeps dosing).
+- Power-cut-during-write proof (atomic write via temp+rename survives).
+- 24-48h induced-outage soak, then reconnect and confirm in-order drain.
 - Streaming two-pass retention eviction at the real 256MB cap.
 - Task 1.3 (fully non-blocking WiFi reconnect) if this ever goes fleet-wide.
 
