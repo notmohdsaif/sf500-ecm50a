@@ -378,6 +378,20 @@ void handleSerialCommands()
                                   : String("[Cellular] APN cleared"));
     }
   }
+  else if (cmd == "SDFORMAT" || cmd == "SDFORMAT CONFIRM")
+  {
+    if (cmd != "SDFORMAT CONFIRM")
+    {
+      LOGLN("[SD.format] This ERASES the whole card and writes a fresh FAT32 FS.");
+      LOGLN("[SD.format] Type exactly:  SDFORMAT CONFIRM   to proceed.");
+    }
+    else
+    {
+      LOGLN("[SD.format] Confirmed — starting.");
+      bool ok = sdFormatFat32();
+      LOGF("[SD.format] result: %s\n", ok ? "OK, card mounted" : "FAILED");
+    }
+  }
   else if (cmd == "CELLKILL")
   {
     LOGLN("[Cellular] Simulating link loss (modem radio OFF)");
@@ -401,6 +415,7 @@ void handleSerialCommands()
     LOGLN("CELLTEST     - Bring up 4G + MQTT-over-cellular (test)");
     LOGLN("CELLAPN [x]  - Show/set/clear the persisted cellular APN");
     LOGLN("CELLKILL/CELLOK - Sim link loss on/off (modem radio, test)");
+    LOGLN("SDFORMAT     - Wipe + FAT32-format the microSD (needs CONFIRM)");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }

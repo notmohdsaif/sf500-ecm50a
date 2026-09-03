@@ -6,10 +6,15 @@
 #include "logger.h"
 #include <SPI.h>
 #include <SdFat.h>
+#include <esp_task_wdt.h>
 
 // SPI2 on the ESP32-S3 is the "FSPI" peripheral. Pins are remapped explicitly
 // below via the GPIO matrix, so the peripheral choice only needs to be a free
 // controller — FSPI matches the board's "SPI2" labelling.
+//
+// Bench-confirmed on sf500_107888 (Task 0.4, 2026-09-03): pin map below is
+// correct, the card mounts first-try at 20 MHz SHARED_SPI, and CD (GPIO3)
+// reads LOW when a card is seated.
 static SdFat32   sd;
 static SPIClass  sdSpi(FSPI);
 static bool      mounted = false;
@@ -33,13 +38,71 @@ bool sdInit()
   }
   else
   {
-    LOGLN("[SD] mount failed / no card");
+    // A card that is physically present but unreadable here is almost always
+    // exFAT/unformatted (SdFat32 mounts FAT16/FAT32 only). `SDFORMAT CONFIRM`
+    // on the serial console rewrites it as FAT32 in place.
+    LOGLN("[SD] mount failed / no card — if a card is inserted, try SDFORMAT");
   }
   return mounted;
 }
 
 bool sdMounted()    { return mounted; }
 bool sdCardDetect() { return digitalRead(SD_CD_PIN) == LOW; }
+
+bool sdFormatFat32()
+{
+  // Reuse the card object sdInit()'s probe already brought up. Re-running
+  // sdSpi.begin() / cardBegin() here wedges the SPI transaction (loop task
+  // blocks, both cores go idle). Only re-init if the probe never ran.
+  if (!sd.card() || sd.card()->sectorCount() == 0)
+  {
+    SdSpiConfig cfg(SD_CS_PIN, SHARED_SPI, SD_SPI_HZ, &sdSpi);
+    if (!sd.cardBegin(cfg))
+    {
+      LOGF("[SD.format] no usable card — sdErrorCode 0x%02X\n", sd.sdErrorCode());
+      return false;
+    }
+  }
+
+  uint32_t sectors = sd.card()->sectorCount();
+  LOGF("[SD.format] wiping %lu sectors (~%lu MB) and writing FAT32 — may take "
+       "several minutes...\n",
+       (unsigned long)sectors, (unsigned long)(sectors / 2048UL));
+  Serial.flush();
+
+  // format() blocks the loop task for minutes and starves the idle tasks the
+  // task-WDT also watches. init() refuses to reconfigure a live WDT, so fully
+  // remove this task, deinit the WDT, then restore it afterwards.
+  esp_task_wdt_delete(NULL);
+  esp_task_wdt_deinit();
+  bool fmtOk = sd.format(&Serial);
+  esp_task_wdt_init(60, true);
+  esp_task_wdt_add(NULL);
+  esp_task_wdt_reset();
+
+  if (!fmtOk)
+  {
+    LOGF("\n[SD.format] FAILED — sdErrorCode 0x%02X\n", sd.sdErrorCode());
+    mounted = false;
+    return false;
+  }
+
+  mounted = sd.volumeBegin();
+  if (mounted)
+  {
+    sd.mkdir("/config");
+    sd.mkdir("/state");
+    sd.mkdir("/buffer");
+    LOGF("\n[SD.format] done — FAT%d, free %llu MB\n",
+         sd.vol()->fatType(), sdFreeBytes() / (1024ULL * 1024ULL));
+  }
+  else
+  {
+    LOGF("\n[SD.format] volumeBegin after format failed — sdErrorCode 0x%02X\n",
+         sd.sdErrorCode());
+  }
+  return mounted;
+}
 
 uint64_t sdFreeBytes()
 {

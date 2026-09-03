@@ -20,6 +20,12 @@
 bool     sdInit();
 bool     sdMounted();
 
+// Recovery: wipe the card and lay down a fresh FAT32 filesystem, then remount.
+// Destroys all data on the card. Only ever invoked by the `SDFORMAT CONFIRM`
+// serial command — never called automatically. Use when a physically-present
+// card will not mount (exFAT from the factory, unformatted, or corrupted FS).
+bool     sdFormatFat32();
+
 // Raw card-detect line (GPIO3). Polarity confirmed on the bench (Task 0.4):
 // LOW = card present with the INPUT_PULLUP used here.
 bool     sdCardDetect();
