@@ -17,14 +17,19 @@
 // reads LOW when a card is seated.
 static SdFat32   sd;
 static SPIClass  sdSpi(FSPI);
-static bool      mounted = false;
+static bool      mounted   = false;
+static bool      busInited = false;
 
 bool sdInit()
 {
   if (mounted) return true;
 
-  pinMode(SD_CD_PIN, INPUT_PULLUP);
-  sdSpi.begin(SD_SPI_SCK, SD_SPI_MISO, SD_SPI_MOSI, SD_CS_PIN);
+  if (!busInited)
+  {
+    pinMode(SD_CD_PIN, INPUT_PULLUP);
+    sdSpi.begin(SD_SPI_SCK, SD_SPI_MISO, SD_SPI_MOSI, SD_CS_PIN);
+    busInited = true;
+  }
 
   SdSpiConfig cfg(SD_CS_PIN, SHARED_SPI, SD_SPI_HZ, &sdSpi);
   mounted = sd.begin(cfg);
@@ -44,6 +49,36 @@ bool sdInit()
     LOGLN("[SD] mount failed / no card — if a card is inserted, try SDFORMAT");
   }
   return mounted;
+}
+
+SdEvent sdTick()
+{
+  // Card-detect edge tracking with a short debounce. A pull mid-run drops the
+  // mounted flag so every buffer write cleanly no-ops (callers fall back to a
+  // direct POST); a reinsert remounts without a reboot.
+  static bool     lastRaw     = false;
+  static uint32_t stableSince = 0;
+  static bool     primed      = false;
+
+  bool     raw = sdCardDetect();
+  uint32_t now = millis();
+
+  if (!primed) { lastRaw = raw; stableSince = now; primed = true; return SD_EVT_NONE; }
+  if (raw != lastRaw) { lastRaw = raw; stableSince = now; return SD_EVT_NONE; }
+  if (now - stableSince < 400) return SD_EVT_NONE;   // wait for the level to settle
+
+  if (mounted && !raw)
+  {
+    LOGLN("[SD] card removed — buffering + schedule persistence paused");
+    mounted = false;                            // stale `sd` object is unused while false
+    return SD_EVT_REMOVED;
+  }
+  if (!mounted && raw && sdInit())
+  {
+    LOGLN("[SD] card reinserted — remounted");
+    return SD_EVT_REMOUNTED;
+  }
+  return SD_EVT_NONE;
 }
 
 bool sdMounted()    { return mounted; }

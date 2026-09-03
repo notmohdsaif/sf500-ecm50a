@@ -20,6 +20,13 @@
 bool     sdInit();
 bool     sdMounted();
 
+enum SdEvent { SD_EVT_NONE, SD_EVT_REMOVED, SD_EVT_REMOUNTED };
+
+// Poll from loop(): debounced card-detect handling. Drops the mount on a pull
+// (writes then no-op) and remounts on reinsert without a reboot. Returns the
+// transition that just occurred, if any, so the caller can log it.
+SdEvent  sdTick();
+
 // Recovery: wipe the card and lay down a fresh FAT32 filesystem, then remount.
 // Destroys all data on the card. Only ever invoked by the `SDFORMAT CONFIRM`
 // serial command — never called automatically. Use when a physically-present
