@@ -861,5 +861,23 @@ void loop()
   }
 #endif
 
+  // --- loopTask stack + heap high-water (Phase 5: the v1.2.5 crash class —
+  //     SdFat + ArduinoJson + mbedTLS all run on this task). Tracks the lowest
+  //     free stack seen so far; logs only when it drops or every 60s. ---
+  {
+    static unsigned long lastStackLog = 0;
+    static uint32_t stackMinEver = 0xFFFFFFFF;
+    uint32_t freeStack = (uint32_t)uxTaskGetStackHighWaterMark(NULL); // bytes (ESP-IDF)
+    bool dropped = freeStack < stackMinEver;
+    if (dropped) stackMinEver = freeStack;
+    if (dropped || now - lastStackLog >= 60000UL)
+    {
+      LOGF("[stack] loopTask free now %lu B, min-ever %lu B (of ~20480) | heap %lu B\n",
+           (unsigned long)freeStack, (unsigned long)stackMinEver,
+           (unsigned long)ESP.getFreeHeap());
+      lastStackLog = now;
+    }
+  }
+
   delay(10);
 }
