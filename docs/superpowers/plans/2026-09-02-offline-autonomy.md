@@ -41,13 +41,12 @@ SUCCESS (Flash 31.5% -> 33.4%, RAM +1%); `pio test -e native` 15/15.
   `journalNextBatch` (8KB window), streaming `journalCompact`. All four emit
   points buffer-then-drain when a card is present, `recorded_at` on every row.
   Retention eviction guarded to <=2MB (streaming two-pass = a TODO).
-- Phase 4 (4.1-4.3): `docs/migrations/offline-recorded-at.sql`;
+- Phase 4 (4.1-4.3): `docs/migrations/offline-recorded-at.sql` **applied to prod
+  2026-09-03** (migration `offline_recorded_at`; nullable `recorded_at` on
+  sensor_metrics / activity_log / relay_metrics + PostgREST cache reload);
   `src/backfill.{h,cpp}` bounded transport-aware drain, wired into `loop()`.
 
 **Not done:**
-- **4.1 step 2** — the `recorded_at` migration has NOT been applied to the prod
-  Supabase project. Until it is, backfilled inserts including `recorded_at` will
-  fail (PostgREST rejects unknown column) — apply it before any live backfill test.
 - **Phase 5** entirely — bench soak on `sf500_107888` (stack high-water, card
   pull, power-cut-during-write, 24-48h induced-outage soak). The unit is on
   cellular spike firmware and in use; needs the hardware.
