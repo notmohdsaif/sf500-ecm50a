@@ -263,3 +263,47 @@ bool sdStreamDropPrefix(const char* path, size_t dropBytes)
   sd.remove(path);
   return sd.rename(tmp.c_str(), path);
 }
+
+// --- Stateful streamed rewrite: one open, many appends, one atomic commit. ---
+// For rewriting a large file (e.g. journal retention) without holding it in RAM
+// and without an open/close per line.
+static File32 rwOut;
+static String rwFinal;
+static bool   rwOpen = false;
+
+bool sdRewriteBegin(const char* finalPath)
+{
+  if (!mounted || rwOpen) return false;
+  rwFinal = String(finalPath);
+  String tmp = rwFinal + ".tmp";
+  rwOut = sd.open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
+  if (!rwOut) return false;
+  rwOpen = true;
+  return true;
+}
+
+bool sdRewriteAppend(const uint8_t* data, size_t len)
+{
+  if (!rwOpen) return false;
+  return rwOut.write(data, len) == len;
+}
+
+bool sdRewriteCommit()
+{
+  if (!rwOpen) return false;
+  rwOut.sync();
+  rwOut.close();
+  rwOpen = false;
+  String tmp = rwFinal + ".tmp";
+  sd.remove(rwFinal.c_str());                 // rename() will not overwrite
+  return sd.rename(tmp.c_str(), rwFinal.c_str());
+}
+
+void sdRewriteAbort()
+{
+  if (!rwOpen) return;
+  rwOut.close();
+  rwOpen = false;
+  String tmp = rwFinal + ".tmp";
+  sd.remove(tmp.c_str());
+}

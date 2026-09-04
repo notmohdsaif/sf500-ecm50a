@@ -87,6 +87,19 @@ void test_eviction_keeps_all_audit_when_no_budget() {
   TEST_ASSERT_TRUE(out.find("\"t\":1") == String::npos);
 }
 
+void test_line_classifier_sensor_vs_audit() {
+  // The classifier shared by the in-RAM and the streaming (device) retention
+  // passes — it must agree with journalDecode's table match.
+  String s = "{\"t\":1,\"approx\":0,\"tbl\":\"sensor_metrics\",\"row\":{\"value\":1.2}}\n";
+  String a = "{\"t\":2,\"approx\":0,\"tbl\":\"activity_log\",\"row\":{\"action\":\"x\"}}\n";
+  String r = "{\"t\":3,\"approx\":0,\"tbl\":\"relay_metrics\",\"row\":{\"relay_id\":\"relay01\"}}\n";
+  TEST_ASSERT_TRUE (journalLineIsSensorMetrics(s.c_str(), s.length()));
+  TEST_ASSERT_FALSE(journalLineIsSensorMetrics(a.c_str(), a.length()));
+  TEST_ASSERT_FALSE(journalLineIsSensorMetrics(r.c_str(), r.length()));
+  TEST_ASSERT_FALSE(journalLineIsSensorMetrics("", 0));
+  TEST_ASSERT_FALSE(journalLineIsSensorMetrics("sensor_metri", 12));   // truncated, no match
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_encode_decode_roundtrip);
@@ -100,5 +113,6 @@ int main(int, char**) {
   RUN_TEST(test_compact_offset_past_end_is_empty);
   RUN_TEST(test_eviction_keeps_audit_drops_oldest_sensor);
   RUN_TEST(test_eviction_keeps_all_audit_when_no_budget);
+  RUN_TEST(test_line_classifier_sensor_vs_audit);
   return UNITY_END();
 }

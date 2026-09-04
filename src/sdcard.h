@@ -56,3 +56,12 @@ bool     sdReadRange(const char* path, size_t offset, size_t maxLen, String& out
 // Rewrite `path` keeping only bytes [dropBytes, end), streamed through a temp
 // file + rename (power-loss safe, bounded RAM). Used for journal compaction.
 bool     sdStreamDropPrefix(const char* path, size_t dropBytes);
+
+// Stateful streamed rewrite of a file: sdRewriteBegin(path) opens <path>.tmp,
+// sdRewriteAppend() writes into it, sdRewriteCommit() fsyncs + renames it over
+// <path>, sdRewriteAbort() discards it. One open/close for the whole rewrite,
+// bounded RAM. Only one rewrite may be in flight at a time.
+bool     sdRewriteBegin(const char* finalPath);
+bool     sdRewriteAppend(const uint8_t* data, size_t len);
+bool     sdRewriteCommit();
+void     sdRewriteAbort();

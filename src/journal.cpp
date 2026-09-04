@@ -85,6 +85,16 @@ String journalDropPrefix(const String& all, size_t offset)
   return out;
 }
 
+// A journalled line is a sensor_metrics row if its `tbl` field is
+// "sensor_metrics". Substring match on the raw line — the sensor row body never
+// contains that string, so this agrees with journalDecode's classification.
+bool journalLineIsSensorMetrics(const char* p, size_t len)
+{
+  for (size_t k = 0; k + 14 <= len; k++)
+    if (memcmp(p + k, "sensor_metrics", 14) == 0) return true;
+  return false;
+}
+
 String journalEvictSensorMetrics(const String& all, size_t targetBytes)
 {
   const char* p = all.c_str();
@@ -98,10 +108,7 @@ String journalEvictSensorMetrics(const String& all, size_t targetBytes)
     while (j < n && p[j] != '\n') j++;
     if (j >= n) break;                    // ignore a torn trailing line
     j++;                                  // include the newline
-    bool isSensor = false;
-    for (size_t k = i; k + 14 <= j; k++)
-      if (memcmp(p + k, "sensor_metrics", 14) == 0) { isSensor = true; break; }
-    lines.push_back({ i, j, isSensor });
+    lines.push_back({ i, j, journalLineIsSensorMetrics(p + i, j - i) });
     i = j;
   }
 
@@ -141,6 +148,7 @@ String journalEvictSensorMetrics(const String& all, size_t targetBytes)
 #include "persist.h"   // clockIsApprox()
 #include "logger.h"
 #include <time.h>
+#include <esp_task_wdt.h>
 
 bool journalAppend(const char* tbl, const String& rowJson)
 {
@@ -210,27 +218,122 @@ void journalCompact()
     journalWriteOffset(0);
 }
 
+// Forward-scan the whole journal WINDOW bytes at a time, summing bytes of
+// sensor_metrics lines vs everything else. Bounded RAM. false on a read error
+// or a single line longer than the window (corruption).
+static bool journalScanSizes(size_t& auditBytes, size_t& sensorBytes)
+{
+  const size_t WIN = 4096;
+  auditBytes = 0;
+  sensorBytes = 0;
+  size_t pos = 0;
+  String win;
+  for (;;)
+  {
+    if (!sdReadRange(JOURNAL_PATH, pos, WIN, win)) return false;
+    size_t n = win.length();
+    if (n == 0) return true;                       // EOF
+    const char* p = win.c_str();
+    size_t lineStart = 0;
+    bool sawNl = false;
+    for (size_t i = 0; i < n; i++)
+    {
+      if (p[i] != '\n') continue;
+      size_t len = i + 1 - lineStart;
+      if (journalLineIsSensorMetrics(p + lineStart, len)) sensorBytes += len;
+      else                                               auditBytes  += len;
+      lineStart = i + 1;
+      sawNl = true;
+    }
+    if (!sawNl) return n < WIN;                    // EOF torn tail = ok; full window, no NL = corrupt
+    pos += lineStart;
+    if (n < WIN) return true;                      // consumed to EOF
+    esp_task_wdt_reset();
+  }
+}
+
+// Second pass: stream the journal into a fresh file, skipping the oldest
+// `dropBytes` worth of sensor_metrics lines and copying every other line
+// verbatim. Bounded RAM (one 4KB window + the SD write buffer), one open/close.
+static bool journalRewriteDropOldestSensor(size_t dropBytes)
+{
+  const size_t WIN = 4096;
+  if (!sdRewriteBegin(JOURNAL_PATH)) return false;
+
+  size_t pos = 0, dropped = 0;
+  String win;
+  bool ok = true;
+  for (;;)
+  {
+    if (!sdReadRange(JOURNAL_PATH, pos, WIN, win)) { ok = false; break; }
+    size_t n = win.length();
+    if (n == 0) break;
+    const char* p = win.c_str();
+    size_t lineStart = 0;
+    bool sawNl = false;
+    for (size_t i = 0; i < n; i++)
+    {
+      if (p[i] != '\n') continue;
+      size_t s = lineStart, len = i + 1 - lineStart;
+      bool sensor = journalLineIsSensorMetrics(p + s, len);
+      if (sensor && dropped < dropBytes)
+        dropped += len;                             // discard this old sensor row
+      else if (!sdRewriteAppend((const uint8_t*)(p + s), len)) { ok = false; break; }
+      lineStart = i + 1;
+      sawNl = true;
+    }
+    if (!ok) break;
+    if (!sawNl) { ok = (n < WIN); break; }          // torn tail at EOF is fine
+    pos += lineStart;
+    if (n < WIN) break;
+    esp_task_wdt_reset();
+  }
+
+  if (!ok) { sdRewriteAbort(); return false; }
+  return sdRewriteCommit();
+}
+
 void journalEnforceRetention()
 {
-  size_t sz = sdFileSize(JOURNAL_PATH);
-  if (sz <= JOURNAL_MAX_BYTES) return;
+  if (!sdMounted()) return;
+  if (sdFileSize(JOURNAL_PATH) <= JOURNAL_MAX_BYTES) return;
 
-  // The eviction pass needs the file in RAM. That is only reachable if the cap
-  // is set streamably-small; at the real 256MB cap this is an "cannot happen on
-  // this hardware" guard — log and let it keep growing rather than crash.
-  if (sz > 2UL * 1024UL * 1024UL)
+  // Clear the already-drained prefix first (streaming, bounded) so the cap
+  // applies to live data only and the rewrite below can start from offset 0.
+  journalCompact();
+
+  size_t total = sdFileSize(JOURNAL_PATH);
+  if (total <= JOURNAL_MAX_BYTES) return;
+
+  // Over the hard cap — an outage of ~256 days at the worst-case fill rate.
+  size_t auditBytes = 0, sensorBytes = 0;
+  if (!journalScanSizes(auditBytes, sensorBytes))
   {
-    LOGF("[journal] over cap (%u B) but too large to evict in RAM — skipping\n", (unsigned)sz);
+    LOGLN("[journal] retention: scan failed (corrupt journal) — file left intact");
     return;
   }
 
-  String all;
-  if (!sdReadFile(JOURNAL_PATH, all)) return;
-  String trimmed = journalEvictSensorMetrics(all, (size_t)(JOURNAL_MAX_BYTES * 0.9));
-  if (sdAtomicWrite(JOURNAL_PATH, (const uint8_t*)trimmed.c_str(), trimmed.length()))
+  const size_t target       = JOURNAL_MAX_BYTES - JOURNAL_MAX_BYTES / 10;   // 90%
+  size_t       sensorBudget  = target > auditBytes ? target - auditBytes : 0;
+  size_t       dropBytes     = sensorBytes > sensorBudget ? sensorBytes - sensorBudget : 0;
+
+  if (dropBytes == 0)
+  {
+    LOGF("[journal] over cap (%lu B) but it is almost entirely audit rows — cannot trim\n",
+         (unsigned long)total);
+    return;
+  }
+
+  if (journalRewriteDropOldestSensor(dropBytes))
   {
     journalWriteOffset(0);
-    LOGF("[journal] retention: %u -> %u bytes\n", (unsigned)sz, (unsigned)trimmed.length());
+    LOGF("[journal] retention: %lu -> ~%lu B (dropped ~%lu B oldest sensor rows, kept %lu B audit)\n",
+         (unsigned long)total, (unsigned long)(total - dropBytes),
+         (unsigned long)dropBytes, (unsigned long)auditBytes);
+  }
+  else
+  {
+    LOGLN("[journal] retention: rewrite failed — file left intact");
   }
 }
 

@@ -41,6 +41,9 @@ String journalDropPrefix(const String& all, size_t offset);
 // newest sensor_metrics lines that fit under `targetBytes`. Order preserved.
 String journalEvictSensorMetrics(const String& all, size_t targetBytes);
 
+// True if the raw journal line `p[0..len)` is a sensor_metrics record.
+bool   journalLineIsSensorMetrics(const char* p, size_t len);
+
 // --- Device-side (SD-backed); not built in the native host-test env -------
 #ifndef UNIT_TEST
 
