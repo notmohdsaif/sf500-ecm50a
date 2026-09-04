@@ -55,16 +55,43 @@ SUCCESS (Flash 31.5% -> 33.4%, RAM +1%); `pio test -e native` 15/15.
   buffered pre-cellular drained to Supabase on reconnect (recorded_at path
   verified live). Firmware flashed to the unit is `dee3c20`.
 
+**Phase 5 — in progress (Supabase-observed; bench CH340 serial link is
+unreliable so fault-injection results are read from `activity_log` +
+`device_management` heartbeat instead of a serial console):**
+- **Stack high-water — PASS (2026-09-03).** loopTask floor 13.9 KB free of
+  20480 across every TLS/SD/JSON path this cellular device runs (cellular
+  software-mbedTLS every 10s, MQTT-over-cell, SdFat journal read + JSON decode
+  in backfill). Peak use ~6.5 KB — nowhere near the v1.2.5 crash class. OTA
+  path is `WiFi.status()`-gated (`ota.cpp:36`) so it never runs here; that
+  combination (OTA-over-WiFi + SD/JSON) is unverified on this branch and
+  should be checked before any WiFi device gets it.
+- **Card-pull fault injection — PASS (2026-09-04).** Pulled 01:26:44 UTC,
+  reinserted 01:27:19. `activity_log` got `microSD removed — buffering paused`
+  (direct POST, journal skipped since `mounted` went false) then `microSD
+  reinserted — remounted` (buffered + drained in 4s). Zero "Device booted"
+  lines in the window = no crash/reboot/watchdog; heartbeat 30s cadence
+  unbroken, `status` stayed `online`. `sdTick()` hot-remove/reinsert works.
+- **Boot summary instrumentation verified live (2026-09-04).** `activity_log`
+  row `boot summary: cfg=loaded ecTarget=1.50 autoDosing=0 mixing=0
+  dosingTime=60 schedules=0 journalPendingB=194 clock=ntp` matched
+  `device_management` exactly — the NVS/SD mirror holds real persisted config,
+  not code defaults (dosingTime=60 != the 30 default). Arrived via the journal
+  buffer-then-drain path with a correct `recorded_at`.
+
 **Not done (Phase 5 remainder):**
-- Stack high-water check (`uxTaskGetStackHighWaterMark` on loopTask — the
-  v1.2.5 crash class: SdFat + ArduinoJson + mbedTLS all on loopTask@20480)
-  through a full dose cycle + a backfill drain.
-- Card-pull fault injection (pull mid-run: no crash, `sdMounted()` false,
-  control plane keeps dosing).
-- Power-cut-during-write proof (atomic write via temp+rename survives).
-- 24-48h induced-outage soak, then reconnect and confirm in-order drain.
+- Power-cut-during-write proof (atomic write via temp+rename survives; journal
+  last-line torn-write rejected by `journalDecode`, replay continues).
+- Cold-start fully offline: provision online, power off, pull 4G antenna,
+  power on — confirm it runs on real persisted config with no network, then
+  restore and confirm the buffered boot summary drains with `clock=approx`.
+- 24-48h induced-outage soak (pull 4G antenna), then reconnect and confirm
+  in-order drain, nothing lost, no reboot.
 - Streaming two-pass retention eviction at the real 256MB cap.
 - Task 1.3 (fully non-blocking WiFi reconnect) if this ever goes fleet-wide.
+
+**Firmware currently on sf500_107888:** branch tip (commit after "Move boot
+summary into bringOnline()"). Still `FIRMWARE_VERSION` 1.2.5 (bench build, not
+a release).
 
 ## Global Constraints
 
