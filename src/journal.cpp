@@ -179,8 +179,11 @@ size_t journalPendingBytes()
   return sz > off ? sz - off : 0;
 }
 
-int journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends, int maxRecs)
+int journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends,
+                     int maxRecs, size_t* scannedTo)
 {
+  if (scannedTo) *scannedTo = fromOffset;
+
   // A batch of maxRecs lines is at most a few KB — read a bounded window, not
   // the whole (potentially multi-MB) journal.
   const size_t WINDOW = 8192;
@@ -207,6 +210,7 @@ int journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends, int maxR
       cnt++;
     }
     pos = nl + 1;
+    if (scannedTo) *scannedTo = fromOffset + pos;   // past every complete line seen
   }
   return cnt;
 }

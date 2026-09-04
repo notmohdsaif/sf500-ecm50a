@@ -47,13 +47,10 @@ void writeRelay(uint8_t num, bool state)
   String payload;
   serializeJson(doc, payload);
 
-  if (sdMounted())
-  {
-    journalAppend("relay_metrics", payload);
+  if (sdMounted() && journalAppend("relay_metrics", payload))
     return;
-  }
 
-  if (WiFi.status() == WL_CONNECTED && haveUplink())
+  if (WiFi.status() == WL_CONNECTED && shouldTryUplink())
   {
     HTTPClient http;
     String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";

@@ -72,7 +72,7 @@ void syncTimeWithNTP()
 
 void registerDevice()
 {
-  if (!haveUplink()) return;
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
   int    code;
@@ -161,7 +161,7 @@ void uploadSensorConfig()
 {
   if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
     return;
-  if (!haveUplink()) return;
+  if (!shouldTryUplink()) return;
 
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
@@ -244,7 +244,7 @@ void uploadSensorReadings()
 
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
-  DynamicJsonDocument doc(1536);
+  DynamicJsonDocument doc(1792);   // fits a full sensor set + a recorded_at per row
   if (doc.capacity() == 0) { LOGLN("[UPLOAD] JSON alloc failed (low heap)"); return; }
   JsonArray arr = doc.to<JsonArray>();
 
@@ -318,16 +318,20 @@ void uploadSensorReadings()
   // Buffer-then-drain: one journal line per row while an SD card is present.
   if (sdMounted())
   {
+    bool allBuffered = true;
     for (JsonObject row : arr)
     {
       String rj;
       serializeJson(row, rj);
-      journalAppend("sensor_metrics", rj);
+      if (!journalAppend("sensor_metrics", rj)) { allBuffered = false; break; }
     }
-    return;
+    if (allBuffered) return;
+    // An SD write failed mid-batch — fall through to a live POST of the whole
+    // array. Rows already journalled will also drain via backfill (a rare
+    // duplicate, preferable to losing the batch).
   }
 
-  if (!haveUplink()) return;   // no card, no uplink — drop
+  if (!shouldTryUplink()) return;   // no card / journal write failed, and no uplink — drop
 
   String payload;
   serializeJson(arr, payload);
@@ -363,7 +367,7 @@ void uploadSensorReadings()
 
 void updateDeviceStatus(const char *status)
 {
-  if (!haveUplink()) return;
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
   StaticJsonDocument<128> doc;
@@ -411,7 +415,7 @@ void updateDeviceStatus(const char *status)
 static void fetchRefillTankMax()
 {
   if (!wlSensorFound) return;
-  if (!haveUplink()) return;
+  if (!shouldTryUplink()) return;
 
   char sensorId[8];
   sprintf(sensorId, "wl_%02d", wlSensorId);
@@ -465,7 +469,7 @@ static void fetchRefillTankMax()
 
 void fetchDeviceConfig()
 {
-  if (!haveUplink()) return;
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
                "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode,tasmota_plug_host,cellular_apn";
@@ -785,7 +789,7 @@ static void syncR3TimersToTasmota()
 
 void fetchSchedules()
 {
-  if (!haveUplink()) return;
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) +
                "/rest/v1/relay_schedule?device=eq." + deviceName +
                "&status=eq.true&select=*";
@@ -894,14 +898,12 @@ void logDeviceActivity(const char *category, const char *action)
   String payload;
   serializeJson(doc, payload);
 
-  // Buffer-then-drain: while an SD card is present every row goes through the
-  // journal (backfill.cpp POSTs it), so a failed live POST is never lost either.
-  if (sdMounted())
-  {
-    journalAppend("activity_log", payload);
+  // Buffer-then-drain: while an SD card is present the row goes through the
+  // journal (backfill.cpp POSTs it). If the SD write itself fails, fall back to
+  // a live POST rather than lose the row.
+  if (sdMounted() && journalAppend("activity_log", payload))
     return;
-  }
-  if (!haveUplink()) return;
+  if (!shouldTryUplink()) return;
 
   if (activeTransport == TRANSPORT_CELLULAR)
   {

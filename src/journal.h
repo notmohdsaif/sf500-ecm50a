@@ -61,8 +61,12 @@ size_t journalPendingBytes();                                 // fileSize - offs
 
 // Decode up to maxRecs complete lines from `fromOffset`. ends[i] = byte offset
 // just past line i (what the caller commits after a successful POST). A torn
-// trailing line is ignored. Returns the count decoded.
-int    journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends, int maxRecs);
+// trailing line is ignored. Returns the count decoded. When `scannedTo` is
+// given it is set to the offset just past every complete line looked at
+// (decoded or not) — so a caller that decodes 0 can still skip a corrupt
+// prefix by committing `scannedTo`.
+int    journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends,
+                        int maxRecs, size_t* scannedTo = nullptr);
 
 void   journalCompact();            // drop [0, offset); reset offset to 0
 void   journalEnforceRetention();   // evict oldest sensor_metrics if over the cap

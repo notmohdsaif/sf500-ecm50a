@@ -412,13 +412,10 @@ void logR3Transition(bool newState)
   String postPayload;
   serializeJson(logDoc, postPayload);
 
-  if (sdMounted())
-  {
-    journalAppend("relay_metrics", postPayload);
+  if (sdMounted() && journalAppend("relay_metrics", postPayload))
     return;
-  }
 
-  if (WiFi.status() != WL_CONNECTED || !haveUplink())
+  if (WiFi.status() != WL_CONNECTED || !shouldTryUplink())
     return;
 
   HTTPClient http;

@@ -738,7 +738,8 @@ void loop()
   //     (cloud, or local NVS/SD) has been loaded. Dosing, water-in (WL)
   //     detection and refill cutoff must not stop during a WiFi + cellular
   //     blackout, nor on a cold boot with no connectivity. Everything below
-  //     that needs the backend is haveUplink()-gated and no-ops when offline. ---
+  //     that needs the backend is shouldTryUplink()-gated and no-ops when
+  //     offline (with one probe attempt per minute to recover). ---
   if (configLoaded())
   {
     if (now - lastSensorRead >= SENSOR_READ_INTERVAL)

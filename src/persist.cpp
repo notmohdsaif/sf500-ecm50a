@@ -233,6 +233,13 @@ void persistSchedules()
   }
   String js;
   serializeJson(a, js);
+
+  // fetchSchedules() calls this every 60s. Skip the card write when nothing
+  // changed — one read + compare is far cheaper than an atomic rewrite.
+  String cur;
+  if (sdReadFile("/config/schedules.json", cur) && cur == js)
+    return;
+
   sdAtomicWrite("/config/schedules.json", (const uint8_t*)js.c_str(), js.length());
 }
 

@@ -45,7 +45,7 @@ void backfillTick()
 {
   static unsigned long last = 0;
 
-  if (!haveUplink() || !sdMounted() || doseCritical()) return;
+  if (!shouldTryUplink() || !sdMounted() || doseCritical()) return;
   if (millis() - last < BACKFILL_MIN_INTERVAL_MS) return;
   if (journalPendingBytes() == 0) return;
   last = millis();
@@ -53,11 +53,19 @@ void backfillTick()
   size_t off = journalReadOffset();
   JournalRec recs[BACKFILL_BATCH];
   size_t     ends[BACKFILL_BATCH];
-  int n = journalNextBatch(off, recs, ends, BACKFILL_BATCH);
+  size_t     scannedTo = off;
+  int n = journalNextBatch(off, recs, ends, BACKFILL_BATCH, &scannedTo);
   if (n == 0)
   {
-    // Only an unparseable prefix left (should not happen) — skip past it so we
-    // don't spin. journalNextBatch already ignores a torn trailing line.
+    // Nothing decoded. If the scan got past one or more complete-but-corrupt
+    // lines (should not happen — a torn trailing line is left alone), skip that
+    // dead prefix so we don't re-read the same window every tick.
+    if (scannedTo > off)
+    {
+      journalWriteOffset(scannedTo);
+      LOGF("[backfill] skipped %u B of unparseable journal prefix\n",
+           (unsigned)(scannedTo - off));
+    }
     return;
   }
 

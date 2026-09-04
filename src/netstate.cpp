@@ -11,9 +11,10 @@ RunState g_runState = RS_BOOT;
 // blackout debounces it false after UPLINK_FAIL_DEBOUNCE failures. Starting
 // false would make every gated call skip before the first success and the
 // device could never come online.
-static bool    uplinkOk   = true;
-static uint8_t failStreak = 0;
-static bool    cfgLoaded  = false;
+static bool     uplinkOk    = true;
+static uint8_t  failStreak  = 0;
+static bool     cfgLoaded   = false;
+static uint32_t lastProbeAt = 0;   // millis() of the last offline REST probe / failure
 
 static const char* rsName(RunState s)
 {
@@ -36,6 +37,21 @@ void setRunState(RunState s)
 
 bool haveUplink() { return uplinkOk; }
 
+bool shouldTryUplink()
+{
+  if (uplinkOk) return true;
+  // Debounced offline. Let one call through per probe interval so a REST
+  // recovery does not depend on the MQTT broker coming back (the only other
+  // path that re-arms uplinkOk).
+  uint32_t now = millis();
+  if (now - lastProbeAt >= UPLINK_PROBE_INTERVAL_MS)
+  {
+    lastProbeAt = now;
+    return true;
+  }
+  return false;
+}
+
 void noteUplinkResult(bool ok)
 {
   if (ok)
@@ -44,6 +60,7 @@ void noteUplinkResult(bool ok)
     failStreak = 0;
     return;
   }
+  lastProbeAt = millis();   // restart the probe interval from this failure
   if (failStreak < 255) failStreak++;
   if (failStreak >= UPLINK_FAIL_DEBOUNCE) uplinkOk = false;
 }

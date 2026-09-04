@@ -13,7 +13,8 @@
 // (WiFi vs cellular); haveUplink() must also reflect the cellular data state.
 // =====================================================
 
-#define UPLINK_FAIL_DEBOUNCE 2   // consecutive REST failures before haveUplink() flips false
+#define UPLINK_FAIL_DEBOUNCE 2      // consecutive REST failures before haveUplink() flips false
+#define UPLINK_PROBE_INTERVAL_MS 60000UL  // while offline, let one gated REST call through this often
 
 enum RunState {
   RS_BOOT,                // pre-config
@@ -26,7 +27,11 @@ extern RunState g_runState;
 
 void setRunState(RunState s);        // logs the transition once
 
-bool haveUplink();                   // debounced "backend reachable right now"
+bool haveUplink();                   // debounced "backend reachable right now" (no side effect)
+bool shouldTryUplink();             // gate a REST attempt: haveUplink() OR a probe is due.
+                                    //   Returns true once per UPLINK_PROBE_INTERVAL_MS while
+                                    //   offline so REST can recover even if the MQTT broker
+                                    //   (the usual re-arm) stays down. Consumes the probe.
 void noteUplinkResult(bool ok);      // call after every Supabase REST attempt
 void noteMqttState(bool connected);  // call on MQTT connect / disconnect
 
