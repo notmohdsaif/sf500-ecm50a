@@ -1,4 +1,4 @@
-# Offline Autonomy — session handoff (updated 2026-09-04)
+# Offline Autonomy — session handoff (updated 2026-09-04, second pass)
 
 Resume point for `sf500_107888` offline-autonomy + SD data retention.
 
@@ -9,9 +9,18 @@ Resume point for `sf500_107888` offline-autonomy + SD data retention.
   Working tree clean.
 - **Build:** `~/.platformio/penv/bin/pio run -e esp32-s3-devkitm-1` → SUCCESS
   (Flash 33.7%, RAM 20.8%). `~/.platformio/penv/bin/pio test -e native` → 16/16.
-- **Firmware currently flashed to `sf500_107888`:** commit `e95315b` (one
-  behind the tip — the post-code-review fixes `3de957d` are NOT yet flashed).
-  Still `FIRMWARE_VERSION` 1.2.5 — bench build, not a release.
+- **Firmware flashed (both bench units, tip `172255d` = functionally `3de957d`,
+  docs-only diff above it):**
+  - `sf500_107888` — cellular bench unit, 0 sensors. Still on `e95315b` from
+    the prior session; NOT re-flashed to the tip yet (a re-flash + online
+    sanity check is still a nice-to-have, not a blocker — `e95315b` → tip is
+    only the 5 review fixes).
+  - `sf500_3a387c` — **WiFi** bench unit ("Test-04"), **no SD card**, EC probe
+    faulty. Flashed to `172255d` this session. This is the second-unit /
+    WiFi-transport / card-less regression check.
+  Still `FIRMWARE_VERSION` 1.2.5 on both — bench builds, not a release.
+  `3a387c` is now on an UNRELEASED build; reflash from `main` to return it to
+  stock v1.2.5.
 - **Code review done** (2026-09-04, inline, commit `3de957d`): 5 fixes
   (uplink recovery probe `shouldTryUplink()`, journal-write POST fallback,
   cheaper schedule persist, backfill corrupt-prefix skip, JSON doc bump). No
@@ -35,6 +44,15 @@ Phases 0-4 (see the plan's "Implementation status" block). Phase 5:
 | Cold-start offline + induced outage (~30 min) | PASS — resumed on real config, buffered rows replayed in order with real `recorded_at` |
 | Streaming 256MB retention eviction | DONE (code + host tests; not HW-exercised — needs a 256-day outage) |
 | Fleet serviceability: SD state to Supabase + MQTT, sdTick backoff, provisioning SOP | DONE + verified live |
+| **2nd unit / WiFi transport / card-less regression** (`sf500_3a387c`) | **PASS** — 3 clean POWERON boots (no bootloop/panic on a unit with that history); `[SD] unavailable`, **zero `sdTick()` retry spam** over 90s (GPIO3 reads "absent" on an empty slot — open item CLOSED); WiFi+NTP+register+OTA-check+MQTT all normal; loopTask stack 11.2 KB free min-ever of 20 KB; boot summary row in `activity_log` = `sd=absent cfg=none ... clock=ntp` with `recorded_at` populated |
+
+**GPIO3-on-a-card-less-board** open item: **CLOSED** by the `3a387c` run above.
+
+**Still NOT covered anywhere** (needs a WiFi unit *with* a card + working sensors):
+card-present path on WiFi — buffer→replay drain over `HTTPClient` (`postRow`
+WiFi branch), and one real dosing-through-outage cycle. Next step if wanted:
+fit a microSD to `3a387c`, pull WiFi ~20 min, restore, confirm in-order drain
+with `recorded_at`.
 
 Fault-injection tests were **Supabase-observed** (bench CH340 serial link is
 unreliable): `activity_log` boot-summary + `microSD removed/reinserted` rows,
