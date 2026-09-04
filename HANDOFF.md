@@ -9,8 +9,15 @@ Resume point for `sf500_107888` offline-autonomy + SD data retention.
   Working tree clean.
 - **Build:** `~/.platformio/penv/bin/pio run -e esp32-s3-devkitm-1` → SUCCESS
   (Flash 33.7%, RAM 20.8%). `~/.platformio/penv/bin/pio test -e native` → 16/16.
-- **Firmware currently flashed to `sf500_107888`:** branch tip (commit `e95315b`
-  code). Still `FIRMWARE_VERSION` 1.2.5 — bench build, not a release.
+- **Firmware currently flashed to `sf500_107888`:** commit `e95315b` (one
+  behind the tip — the post-code-review fixes `3de957d` are NOT yet flashed).
+  Still `FIRMWARE_VERSION` 1.2.5 — bench build, not a release.
+- **Code review done** (2026-09-04, inline, commit `3de957d`): 5 fixes
+  (uplink recovery probe `shouldTryUplink()`, journal-write POST fallback,
+  cheaper schedule persist, backfill corrupt-prefix skip, JSON doc bump). No
+  blockers. Two documented characteristics left as-is: at-least-once delivery
+  (possible duplicate rows — see tasks/todo.md) and remove-then-rename in the
+  atomic-write helpers.
 - **`recorded_at` migration:** APPLIED to prod (`qkqeysggrqhxizkdmbhx`,
   migration `offline_recorded_at`) 2026-09-03.
 - The `cellular-fallback` worktree was left untouched.

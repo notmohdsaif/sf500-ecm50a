@@ -123,7 +123,22 @@ unreliable so fault-injection results are read from `activity_log` +
   the FAT scan. Verified live on sf500_107888. `docs/microsd-provisioning.md`
   is the office card-prep + field-verify SOP.
 
+- **Code review — DONE (2026-09-04, inline; commit 3de957d).** Reviewed the
+  whole branch diff (26 files, +4449/-121). No blockers. Fixed: (1 medium)
+  `haveUplink()` could only re-arm via an MQTT reconnect -> added
+  `shouldTryUplink()` (one probe/60s while offline) behind every REST gate;
+  (2) the four buffer-then-drain sites now fall back to a live POST if the SD
+  write fails; (3) `persistSchedules()` skips the card write when unchanged;
+  (4) `backfillTick()` actually skips a corrupt journal prefix now; (5)
+  `uploadSensorReadings` doc 1536->1792. Left as documented characteristics,
+  not bugs: at-least-once delivery => possible duplicate rows after a flaky
+  drain (dashboard dedup / DB unique index is the mitigation — logged in
+  tasks/todo.md + xlsx #77 area); remove-then-rename in the atomic-write
+  helpers (SdFat32 has no atomic replace; ~ms exposure, pre-existing idiom).
+
 **Not done (Phase 5 remainder):**
+- Re-flash sf500_107888 with the post-review tip (3de957d) and a quick
+  online-behaviour sanity check (the device is still on e95315b).
 - 24-48h induced-outage soak (pull SIM, leave it), then reconnect and confirm
   in-order drain, nothing lost, no reboot. Value is limited on this 0-sensor
   bench unit (journal barely grows — 194->677 B over 30 min was mostly boot
