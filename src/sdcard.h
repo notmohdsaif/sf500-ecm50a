@@ -20,6 +20,16 @@
 bool     sdInit();
 bool     sdMounted();
 
+// Coarse SD health for telemetry (boot summary + MQTT payload). UNREADABLE vs
+// ABSENT is inferred from the CD pin, so on a board whose CD line is not wired
+// a truly card-less slot may report UNREADABLE — treat "not OK" as the signal.
+enum SdHealth { SD_HEALTH_OK, SD_HEALTH_ABSENT, SD_HEALTH_UNREADABLE };
+SdHealth sdHealth();
+
+// Free space, recomputed at most every 5 min (the underlying FAT scan is not
+// free). 0 when no card. Safe to call every telemetry publish.
+uint64_t sdFreeBytesCached();
+
 enum SdEvent { SD_EVT_NONE, SD_EVT_REMOVED, SD_EVT_REMOUNTED };
 
 // Poll from loop(): debounced card-detect handling. Drops the mount on a pull

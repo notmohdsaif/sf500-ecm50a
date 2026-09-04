@@ -20,6 +20,11 @@ static SPIClass  sdSpi(FSPI);
 static bool      mounted   = false;
 static bool      busInited = false;
 
+static uint64_t  freeCache   = 0;
+static uint32_t  freeCacheAt = 0;   // millis() of last freeCache refresh; 0 = stale
+
+#define SD_REMOUNT_RETRY_MS 15000UL   // don't hammer sd.begin() when a card won't mount
+
 bool sdInit()
 {
   if (mounted) return true;
@@ -39,7 +44,8 @@ bool sdInit()
     sd.mkdir("/config");
     sd.mkdir("/state");
     sd.mkdir("/buffer");
-    LOGF("[SD] mounted, free %llu MB\n", sdFreeBytes() / (1024ULL * 1024ULL));
+    freeCacheAt = 0;                            // force a fresh free-space read
+    LOGF("[SD] mounted, free %llu MB\n", sdFreeBytesCached() / (1024ULL * 1024ULL));
   }
   else
   {
@@ -71,18 +77,49 @@ SdEvent sdTick()
   {
     LOGLN("[SD] card removed — buffering + schedule persistence paused");
     mounted = false;                            // stale `sd` object is unused while false
+    freeCacheAt = 0;
     return SD_EVT_REMOVED;
   }
-  if (!mounted && raw && sdInit())
+  if (!mounted && raw)
   {
-    LOGLN("[SD] card reinserted — remounted");
-    return SD_EVT_REMOUNTED;
+    // A card is (or looks) present but isn't mounted. Retry sd.begin() at most
+    // once per SD_REMOUNT_RETRY_MS so a bad/absent card (or an unwired CD line
+    // reading "present") never spins the SPI init every loop.
+    static uint32_t lastTry = 0;
+    if (lastTry == 0 || now - lastTry >= SD_REMOUNT_RETRY_MS)
+    {
+      lastTry = now;
+      if (sdInit())
+      {
+        LOGLN("[SD] card reinserted — remounted");
+        return SD_EVT_REMOUNTED;
+      }
+    }
   }
   return SD_EVT_NONE;
 }
 
 bool sdMounted()    { return mounted; }
 bool sdCardDetect() { return digitalRead(SD_CD_PIN) == LOW; }
+
+SdHealth sdHealth()
+{
+  if (mounted)         return SD_HEALTH_OK;
+  if (sdCardDetect())  return SD_HEALTH_UNREADABLE;   // CD says present, won't mount
+  return SD_HEALTH_ABSENT;
+}
+
+uint64_t sdFreeBytesCached()
+{
+  if (!mounted) return 0;
+  uint32_t now = millis();
+  if (freeCacheAt == 0 || now - freeCacheAt >= 300000UL)   // refresh at most every 5 min
+  {
+    freeCache   = sdFreeBytes();
+    freeCacheAt = now ? now : 1;
+  }
+  return freeCache;
+}
 
 bool sdFormatFat32()
 {

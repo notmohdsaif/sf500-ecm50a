@@ -315,11 +315,21 @@ static void bringOnline()
     // cold-start-from-defaults vs from real persisted config; journalPendingB
     // shows what a power-cut left in the buffer.
     {
-      char b[220];
+      char sdTok[24];
+      switch (sdHealth())
+      {
+        case SD_HEALTH_OK:
+          snprintf(sdTok, sizeof(sdTok), "ok/%luMB",
+                   (unsigned long)(sdFreeBytesCached() / (1024ULL * 1024ULL)));
+          break;
+        case SD_HEALTH_UNREADABLE: strlcpy(sdTok, "unreadable", sizeof(sdTok)); break;
+        default:                   strlcpy(sdTok, "absent",     sizeof(sdTok)); break;
+      }
+      char b[240];
       snprintf(b, sizeof(b),
-               "boot summary: cfg=%s ecTarget=%.2f autoDosing=%d mixing=%d "
+               "boot summary: sd=%s cfg=%s ecTarget=%.2f autoDosing=%d mixing=%d "
                "dosingTime=%lu schedules=%d journalPendingB=%lu clock=%s",
-               configLoaded() ? "loaded" : "none", ecTarget, autoDosing ? 1 : 0,
+               sdTok, configLoaded() ? "loaded" : "none", ecTarget, autoDosing ? 1 : 0,
                autoMixing ? 1 : 0, (unsigned long)dosingTime, scheduleCount,
                (unsigned long)(sdMounted() ? journalPendingBytes() : 0),
                clockIsApprox() ? "approx" : "ntp");
