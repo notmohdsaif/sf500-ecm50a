@@ -102,15 +102,27 @@ unreliable so fault-injection results are read from `activity_log` +
   this modem supplies NITZ network time even with no data session, so the
   coarse-clock fallback wasn't needed here (still covered by host tests).
 
+- **Streaming 256MB retention eviction — DONE (2026-09-04, commit 82bb1a0).**
+  `journalEnforceRetention()` now: `journalCompact()` first, then a bounded-RAM
+  two-pass (`journalScanSizes` sums sensor vs audit bytes in 4KB windows;
+  `journalRewriteDropOldestSensor` streams into a fresh file via new
+  `sdRewriteBegin/Append/Commit` helpers, dropping the oldest sensor_metrics
+  lines, keeping every audit line, `esp_task_wdt_reset()` per window). Shared
+  classifier `journalLineIsSensorMetrics()` host-tested. The old in-RAM path +
+  its 2MB give-up guard are gone. 16/16 host tests. Not exercised on hardware
+  (would need a 256MB journal = ~256-day outage); the window-walk logic mirrors
+  the proven `journalNextBatch`.
+
 **Not done (Phase 5 remainder):**
 - 24-48h induced-outage soak (pull SIM, leave it), then reconnect and confirm
   in-order drain, nothing lost, no reboot. Value is limited on this 0-sensor
   bench unit (journal barely grows — 194->677 B over 30 min was mostly boot
   rows; a real sensor unit writes ~200 KB/day). Catches slow leaks / heap
   fragmentation / offset-file corruption over many compaction cycles that
-  30 min does not.
-- Streaming two-pass retention eviction at the real 256MB cap.
+  30 min does not. **Optional** — all mechanisms are individually proven.
 - Task 1.3 (fully non-blocking WiFi reconnect) if this ever goes fleet-wide.
+- OTA-over-WiFi + SD/JSON stack combination (unreachable on this cellular-only
+  unit) before any WiFi device gets this branch.
 
 **Firmware currently on sf500_107888:** branch tip (commit after "Move boot
 summary into bringOnline()"). Still `FIRMWARE_VERSION` 1.2.5 (bench build, not
