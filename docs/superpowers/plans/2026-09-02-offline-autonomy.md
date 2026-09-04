@@ -78,14 +78,37 @@ unreliable so fault-injection results are read from `activity_log` +
   not code defaults (dosingTime=60 != the 30 default). Arrived via the journal
   buffer-then-drain path with a correct `recorded_at`.
 
+- **Power-cut test — PASS (2026-09-04).** 3 abrupt power cuts ~01:30-01:43 UTC
+  -> 3 clean reboots, each reaching bringOnline()/registration (no boot loop,
+  no brick). `boot summary: cfg=loaded ecTarget=1.50 autoDosing=0 mixing=0
+  dosingTime=60` identical and correct after every cut (a torn `sdAtomicWrite`
+  would show cfg=none or wrong values). `journalPendingB=194` consistent across
+  all 3 (file readable, offset accounting stable, no corruption/growth). All
+  buffered boot summaries drained in order with correct recorded_at. Caveat:
+  journal was near-idle (194 B, 0-sensor unit) so a cut landing exactly
+  mid-fsync wasn't maximally stressed; design (temp+fsync+rename, torn-line
+  rejection in journalDecode) + 3 clean cuts give high confidence.
+
+- **Cold-start offline + induced outage — PASS (2026-09-04).** SIM pulled
+  ~01:52 UTC; device ran offline-autonomous ~30 min, no crash, cooperatively
+  retrying the modem (`SIM not ready` -> `Rebooting modem and retrying`, serial
+  responsive throughout, no watchdog). Booted twice while offline (02:13:48,
+  02:21:43) — each resumed on real persisted config (`cfg=loaded ecTarget=1.50
+  dosingTime=60`, not the code defaults). `journalPendingB` grew 194 -> 677
+  across the outage (both boot summaries + sensor-init rows) then drained in
+  order on recovery, each keeping its real `recorded_at` (02:13:48 / 02:21:43),
+  not collapsed to the 02:22 reconnect instant. Heartbeat resumed cleanly, no
+  boot loop. Caveat: `clock=approx` / `seedClockFromStore()` never exercised —
+  this modem supplies NITZ network time even with no data session, so the
+  coarse-clock fallback wasn't needed here (still covered by host tests).
+
 **Not done (Phase 5 remainder):**
-- Power-cut-during-write proof (atomic write via temp+rename survives; journal
-  last-line torn-write rejected by `journalDecode`, replay continues).
-- Cold-start fully offline: provision online, power off, pull 4G antenna,
-  power on — confirm it runs on real persisted config with no network, then
-  restore and confirm the buffered boot summary drains with `clock=approx`.
-- 24-48h induced-outage soak (pull 4G antenna), then reconnect and confirm
-  in-order drain, nothing lost, no reboot.
+- 24-48h induced-outage soak (pull SIM, leave it), then reconnect and confirm
+  in-order drain, nothing lost, no reboot. Value is limited on this 0-sensor
+  bench unit (journal barely grows — 194->677 B over 30 min was mostly boot
+  rows; a real sensor unit writes ~200 KB/day). Catches slow leaks / heap
+  fragmentation / offset-file corruption over many compaction cycles that
+  30 min does not.
 - Streaming two-pass retention eviction at the real 256MB cap.
 - Task 1.3 (fully non-blocking WiFi reconnect) if this ever goes fleet-wide.
 
