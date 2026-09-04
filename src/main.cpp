@@ -307,6 +307,24 @@ static void bringOnline()
   {
     markAppValid();
     logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
+
+    // Offline-autonomy boot summary → activity_log. Makes the Phase 5
+    // fault-injection tests observable from Supabase without a serial console:
+    // the config values here are the local NVS/SD mirror the device resumed on
+    // (cloud refresh happens a few lines below), so they reveal
+    // cold-start-from-defaults vs from real persisted config; journalPendingB
+    // shows what a power-cut left in the buffer.
+    {
+      char b[220];
+      snprintf(b, sizeof(b),
+               "boot summary: cfg=%s ecTarget=%.2f autoDosing=%d mixing=%d "
+               "dosingTime=%lu schedules=%d journalPendingB=%lu clock=%s",
+               configLoaded() ? "loaded" : "none", ecTarget, autoDosing ? 1 : 0,
+               autoMixing ? 1 : 0, (unsigned long)dosingTime, scheduleCount,
+               (unsigned long)(sdMounted() ? journalPendingBytes() : 0),
+               clockIsApprox() ? "approx" : "ntp");
+      logDeviceActivity("system", b);
+    }
     if (activeTransport == TRANSPORT_WIFI)
       checkForOTAUpdate();   // ota.cpp uses its own WiFiClientSecure — WiFi only
     esp_task_wdt_reset();
@@ -479,22 +497,6 @@ void setup()
     {
       LOGLN("[boot] no local config yet — waiting for first uplink");
     }
-  }
-
-  // Boot summary → activity_log (buffered + replayed if offline). One line that
-  // makes the Phase 5 tests observable from Supabase without a serial console:
-  // the config values here reveal cold-start-from-defaults vs from real
-  // persisted config; journalPending shows what a power-cut left behind.
-  {
-    char b[220];
-    snprintf(b, sizeof(b),
-             "boot: cfg=%s ecTarget=%.2f autoDosing=%d mixing=%d dosingTime=%lu "
-             "schedules=%d journalPendingB=%lu clock=%s",
-             configLoaded() ? "loaded" : "none", ecTarget, autoDosing ? 1 : 0,
-             autoMixing ? 1 : 0, (unsigned long)dosingTime, scheduleCount,
-             (unsigned long)(sdMounted() ? journalPendingBytes() : 0),
-             clockIsApprox() ? "approx" : "ntp");
-    logDeviceActivity("system", b);
   }
 
   // Watchdog: if loop() freezes for >60s, hard-reset the device.
