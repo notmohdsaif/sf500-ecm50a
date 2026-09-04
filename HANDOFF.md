@@ -5,11 +5,11 @@ Resume point for `sf500_107888` offline-autonomy + SD data retention.
 ## Where things are
 
 - **Branch:** `offline-autonomy`, worktree `.claude/worktrees/offline-autonomy`.
-  Rebased onto `cellular-fallback` (base tip `80f56a9`). **27 commits, NOT pushed.**
+  Rebased onto `cellular-fallback` (base tip `80f56a9`). **~32 commits, NOT pushed.**
   Working tree clean.
 - **Build:** `~/.platformio/penv/bin/pio run -e esp32-s3-devkitm-1` → SUCCESS
-  (Flash 33.6%, RAM 20.8%). `~/.platformio/penv/bin/pio test -e native` → 16/16.
-- **Firmware currently flashed to `sf500_107888`:** branch tip (commit `82bb1a0`
+  (Flash 33.7%, RAM 20.8%). `~/.platformio/penv/bin/pio test -e native` → 16/16.
+- **Firmware currently flashed to `sf500_107888`:** branch tip (commit `e95315b`
   code). Still `FIRMWARE_VERSION` 1.2.5 — bench build, not a release.
 - **`recorded_at` migration:** APPLIED to prod (`qkqeysggrqhxizkdmbhx`,
   migration `offline_recorded_at`) 2026-09-03.
@@ -27,10 +27,21 @@ Phases 0-4 (see the plan's "Implementation status" block). Phase 5:
 | Power-cut during write (x3 hard cuts) | PASS — config + journal intact every time |
 | Cold-start offline + induced outage (~30 min) | PASS — resumed on real config, buffered rows replayed in order with real `recorded_at` |
 | Streaming 256MB retention eviction | DONE (code + host tests; not HW-exercised — needs a 256-day outage) |
+| Fleet serviceability: SD state to Supabase + MQTT, sdTick backoff, provisioning SOP | DONE + verified live |
 
 Fault-injection tests were **Supabase-observed** (bench CH340 serial link is
 unreliable): `activity_log` boot-summary + `microSD removed/reinserted` rows,
 `device_management` heartbeat continuity.
+
+## Fleet serviceability (no serial needed at customer sites)
+
+- Boot summary row in `activity_log`: `boot summary: sd=ok/<free>MB|absent|unreadable ...`
+- MQTT `sf500/<id>/data` payload `sd` block: `{state, free_mb, pending_b}` —
+  `pending_b` is the unsent buffer size (0 = caught up).
+- `docs/microsd-provisioning.md` — office card prep (FAT32 format + fake-card
+  verify), fitting, and how to confirm from Supabase/MQTT. Field `SDFORMAT
+  CONFIRM` is a bench-only last resort.
+- Card spec: 8 GB industrial/high-endurance, FAT32.
 
 ## Optional / deferred
 

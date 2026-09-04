@@ -113,6 +113,16 @@ unreliable so fault-injection results are read from `activity_log` +
   (would need a 256MB journal = ~256-day outage); the window-walk logic mirrors
   the proven `journalNextBatch`.
 
+- **Fleet-serviceability additions — DONE (2026-09-04, commit e95315b).** SD
+  state now reported without a serial console: boot summary gains
+  `sd=ok/<free>MB|absent|unreadable`; MQTT `sf500/<id>/data` gains an `sd`
+  block `{state, free_mb, pending_b}` (pending_b = unsent journal bytes, so
+  "caught up?" is visible every publish). `sdTick()` remount retry backed off
+  to 15s (was every-loop) so a bad/absent card or an unwired CD line reading
+  "present" never spins `sd.begin()`. `sdFreeBytesCached()` 5-min cache over
+  the FAT scan. Verified live on sf500_107888. `docs/microsd-provisioning.md`
+  is the office card-prep + field-verify SOP.
+
 **Not done (Phase 5 remainder):**
 - 24-48h induced-outage soak (pull SIM, leave it), then reconnect and confirm
   in-order drain, nothing lost, no reboot. Value is limited on this 0-sensor
@@ -123,6 +133,10 @@ unreliable so fault-injection results are read from `activity_log` +
 - Task 1.3 (fully non-blocking WiFi reconnect) if this ever goes fleet-wide.
 - OTA-over-WiFi + SD/JSON stack combination (unreachable on this cellular-only
   unit) before any WiFi device gets this branch.
+- What GPIO3 (CD pin) reads on a genuinely card-less ECM50-A — never tested
+  with the card physically out; check on an assembly unit before fleet. The
+  15s `sdTick` backoff makes a wrong reading harmless, but `sd=unreadable`
+  vs `sd=absent` would be misreported.
 
 **Firmware currently on sf500_107888:** branch tip (commit after "Move boot
 summary into bringOnline()"). Still `FIRMWARE_VERSION` 1.2.5 (bench build, not
