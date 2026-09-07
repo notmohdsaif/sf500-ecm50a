@@ -11,6 +11,7 @@
 #include "sensors.h"
 #include "relay.h"
 #include "ota.h"
+#include "cellular.h"
 #include <esp_task_wdt.h>
 
 // =====================================================
@@ -27,6 +28,11 @@ WebServer portalServer(80);
 DNSServer dnsServer;
 
 WiFiState wifiState = STATE_PORTAL;
+bool cellularCapable = false;
+bool cellularDetectAttempted = false;
+NetworkTransport activeTransport = TRANSPORT_WIFI;
+String cellularApn = "";
+bool forcePortalGesture = false;   // set by the 3x power-cycle check in setup()
 std::vector<NetItem> scanList;
 bool portalMode = false;
 unsigned long portalConnectStartMs = 0;
@@ -161,6 +167,151 @@ size_t getArduinoLoopTaskStackSize(void) {
   return 20480;
 }
 
+// Cellular fallback trigger. Called from loop()'s transport state machine when
+// WiFi is unreachable — whether saved creds failed to connect or there are none
+// at all (fresh unit / after a wifi_cmd forget). Lazily probes the modem once
+// per boot, then, if a modem and an APN are both present, brings up a cellular
+// data session and moves MQTT + Supabase onto it. Rate-limited so a failing
+// connect can't peg the loop.
+static void tryCellularFallback()
+{
+  if (activeTransport != TRANSPORT_WIFI)
+    return;
+  if (WiFi.status() == WL_CONNECTED)
+    return; // WiFi is actually up (e.g. portal creds just worked) — no fallback
+
+  static unsigned long lastAttempt = 0;
+  if (lastAttempt != 0 && millis() - lastAttempt < 60000)
+    return;
+  lastAttempt = millis();
+
+  if (!cellularCapable && !cellularDetectAttempted)
+  {
+    cellularDetectAttempted = true;
+    cellularCapable = detectCellularModem();
+    LOGF("[Cellular] Modem %s\n", cellularCapable ? "detected" : "not present");
+  }
+
+  // No modem, or no APN configured -> feature stays inert (spec safety default).
+  if (!cellularCapable || cellularApn.length() == 0)
+    return;
+
+  LOGLN("[Cellular] No WiFi — attempting cellular fallback...");
+  esp_task_wdt_reset(); // fresh 60s for the (blocking) modem bring-up
+  if (connectCellularData(cellularApn.c_str()))
+  {
+    activeTransport = TRANSPORT_CELLULAR;
+    mqttClient.disconnect();
+    mqttClient.setClient(cellularClient);
+    LOGLN("[Cellular] Fallback active");
+  }
+  else
+  {
+    LOGLN("[Cellular] Fallback attempt failed — will retry");
+  }
+}
+
+// Non-blocking WiFi reconnect attempt while the device is running on cellular
+// and the portal is NOT open (when it is, handlePortalLoop() does this). Fires
+// on the same cadence as the portal's own retry. The up-switch check in loop()
+// tears cellular down once this associates.
+static void retryWifiInBackground(unsigned long now)
+{
+  static unsigned long lastRetry = 0;
+  if (activeTransport != TRANSPORT_CELLULAR || portalMode)
+    return;
+  if (lastRetry != 0 && now - lastRetry < PORTAL_SAVED_RETRY_INTERVAL_MS)
+    return;
+  lastRetry = now;
+
+  wifiPrefs.begin("wifi", true);
+  String ssid = wifiPrefs.getString("ssid", "");
+  String pass = wifiPrefs.getString("pass", "");
+  wifiPrefs.end();
+  if (ssid.isEmpty())
+    return;
+
+  LOGF("[WiFi] Background retry of '%s' while on cellular...\n", ssid.c_str());
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+}
+
+// A human explicitly asked for the portal — open it right away, regardless of
+// transport state. (1) wifi_cmd: portal, now deliverable over cellular.
+// (2) 3x power-cycle gesture (forcePortalGesture, set in setup()).
+static bool portalRequestedByHuman()
+{
+  if (pendingWifiPortal)
+  {
+    pendingWifiPortal = false;
+    LOGLN("[Portal] Opening on remote command");
+    return true;
+  }
+  if (forcePortalGesture)
+  {
+    forcePortalGesture = false;
+    LOGLN("[Portal] Opening on 3x power-cycle gesture");
+    return true;
+  }
+  return false;
+}
+
+// Open the AP because the device has no other way to be useful: a fresh unit
+// that must be provisioned, or one that's genuinely offline (WiFi down AND
+// cellular didn't take). Checked only AFTER the transport state machine has
+// had its shot at cellular.
+static bool shouldOpenPortalOffline()
+{
+  bool haveCell = (activeTransport == TRANSPORT_CELLULAR);
+  bool wifiDown = (WiFi.status() != WL_CONNECTED);
+
+  wifiPrefs.begin("wifi", true);
+  bool haveCreds = wifiPrefs.getString("ssid", "").length() > 0;
+  wifiPrefs.end();
+
+  if (!haveCreds && !haveCell) return true; // must be provisioned on-site
+  if (wifiDown && !haveCell)   return true; // genuinely offline
+
+  return false;
+}
+
+// One-time "we have an uplink" initialisation — registration, time, sensors,
+// config. Runs once per boot (guarded by startupTime == 0 at the call sites),
+// the first time the device is reachable on ANY transport (WiFi or cellular).
+// Extracted from what used to be duplicated in setup() and loop().
+static void bringOnline()
+{
+  secureClient.setInsecure();
+  secureClient.setHandshakeTimeout(5);  // bound stalled TLS handshakes (s)
+  delay(500);
+
+  esp_task_wdt_reset();
+  if (activeTransport == TRANSPORT_CELLULAR)
+    syncTimeFromModem();
+  else
+    syncTimeWithNTP();
+
+  esp_task_wdt_reset();
+  registerDevice();
+
+  if (isRegistered)
+  {
+    markAppValid();
+    logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
+    if (activeTransport == TRANSPORT_WIFI)
+      checkForOTAUpdate();   // ota.cpp uses its own WiFiClientSecure — WiFi only
+    esp_task_wdt_reset();
+    initSensors();
+    loadSmartCalibration();
+    loadRainResetState();
+    esp_task_wdt_reset();
+    uploadSensorConfig();
+    fetchDeviceConfig();
+    startupTime = millis();
+    LOGLN("Commands: R1ON/OFF, R2ON/OFF, ALLON/OFF, WIFIINFO, HELP\n");
+  }
+}
+
 void setup()
 {
   Serial.begin(9600);
@@ -228,6 +379,33 @@ void setup()
   String savedPass = wifiPrefs.getString("pass", "");
   wifiPrefs.end();
 
+  // Cellular APN persists across reboots so fallback still works after a
+  // wifi_cmd forget (which clears WiFi creds and restarts) or a power cut
+  // when the device can't reach Supabase to re-fetch it.
+  wifiPrefs.begin("cellular", true);
+  cellularApn = wifiPrefs.getString("apn", "");
+  wifiPrefs.end();
+  if (cellularApn.length() > 0)
+    LOGF("[Cellular] Saved APN: %s\n", cellularApn.c_str());
+
+  // 3x rapid power-cycle -> force the captive portal (physical escape hatch,
+  // no button on the board). Only counts power-on resets; loop() zeroes the
+  // counter after ~8s of uptime so normal runs don't accumulate.
+  {
+    wifiPrefs.begin("boot", false);
+    uint32_t bc = (esp_reset_reason() == ESP_RST_POWERON)
+                    ? wifiPrefs.getUInt("cnt", 0) + 1
+                    : 0;
+    if (bc >= 3)
+    {
+      forcePortalGesture = true;
+      bc = 0;
+      LOGLN("[Boot] 3x power-cycle detected — portal will open");
+    }
+    wifiPrefs.putUInt("cnt", bc);
+    wifiPrefs.end();
+  }
+
   LOGF("[WiFi] Saved SSID: '%s'\n",
        savedSSID.length() > 0 ? savedSSID.c_str() : "(empty)");
 
@@ -253,41 +431,20 @@ void setup()
     }
     else
     {
-      LOGLN("\n[WiFi] Auto-connect failed, starting portal");
-      startWiFiPortal();
+      // Don't force the portal here — loop()'s transport state machine tries
+      // cellular first, and shouldOpenPortal() opens the AP only if that also
+      // fails (or a human asks for it).
+      LOGLN("\n[WiFi] Auto-connect failed — deferring to transport state machine");
     }
   }
   else
   {
-    LOGLN("[WiFi] No saved credentials, starting portal");
-    startWiFiPortal();
+    LOGLN("[WiFi] No saved credentials — deferring to transport state machine");
   }
 
-  // --- Online initialization ---
-  if (wifiState == STATE_ONLINE)
-  {
-    secureClient.setInsecure();
-    secureClient.setHandshakeTimeout(5);  // bound stalled TLS handshakes (s)
-    delay(500);
-
-    syncTimeWithNTP();
-    registerDevice();
-
-    if (isRegistered)
-    {
-      markAppValid();
-      logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
-      checkForOTAUpdate();
-      initSensors();
-      loadSmartCalibration();
-      loadRainResetState();
-      uploadSensorConfig();
-      fetchDeviceConfig();
-
-      LOGLN("Commands: R1ON/OFF, R2ON/OFF, ALLON/OFF, WIFIINFO, HELP\n");
-      startupTime = millis();
-    }
-  }
+  // --- Online initialisation (WiFi here; the cellular path runs it from loop()) ---
+  if (wifiState == STATE_ONLINE && startupTime == 0)
+    bringOnline();
 
   // Watchdog: if loop() freezes for >60s, hard-reset the device.
   // 60s covers worst-case WiFi reconnect (30s) + one blocking HTTP call (6s).
@@ -307,83 +464,187 @@ void loop()
   checkRelayTimers();
   handleSerialCommands();
 
-  // --- Portal mode ---
-  // handlePortalLoop() sets portalMode=false when the AP is torn down
-  if (portalMode)
+  // Clear the 3x power-cycle gesture counter once we've run long enough that
+  // this clearly wasn't part of a rapid reset sequence.
+  static bool bootCntCleared = false;
+  if (!bootCntCleared && now > 8000)
   {
-    handlePortalLoop();
-    return;
-  }
-
-  // One-time initialization after portal completes (wifiState==STATE_ONLINE, not yet registered)
-  if (wifiState == STATE_ONLINE && !isRegistered && startupTime == 0)
-  {
-    LOGLN("[WiFi] Portal complete, initializing...");
-    secureClient.setInsecure();
-    secureClient.setHandshakeTimeout(5);  // bound stalled TLS handshakes (s)
-    delay(500);
-
-    syncTimeWithNTP();
-    registerDevice();
-
-    if (isRegistered)
-    {
-      markAppValid();
-      logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
-      checkForOTAUpdate();
-      initSensors();
-      loadSmartCalibration();
-      loadRainResetState();
-      uploadSensorConfig();
-      fetchDeviceConfig();
-      startupTime = millis();
-    }
-  }
-
-  // --- WiFi reconnect if dropped ---
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    LOGLN("[WiFi] Connection lost, reconnecting...");
-
-    wifiPrefs.begin("wifi", true);
-    String savedSSID = wifiPrefs.getString("ssid", "");
-    String savedPass = wifiPrefs.getString("pass", "");
+    bootCntCleared = true;
+    wifiPrefs.begin("boot", false);
+    wifiPrefs.putUInt("cnt", 0);
     wifiPrefs.end();
+  }
 
+  // --- Captive portal ---
+  // Tracks WHY the AP is open: an auto-opened offline portal yields to cellular
+  // once fallback succeeds; a human-requested one stays up for on-site setup.
+  static bool portalAutoOpened = false;
+  if (portalMode)
+    handlePortalLoop();   // runs its own WiFi retry; clears portalMode on teardown
+  else if (portalRequestedByHuman())
+  {
+    portalAutoOpened = false;
+    startWiFiPortal();     // explicit request — open now, before any blocking work
+  }
+
+  // --- Transport state machine: WiFi <-> cellular ---
+  // Down-switch: WiFi is gone and we're still nominally on WiFi. Try a few
+  // quick reconnects, then hand off to cellular (no portal).
+  if (WiFi.status() != WL_CONNECTED && activeTransport == TRANSPORT_WIFI)
+  {
     bool reconnected = false;
-    if (savedSSID.length() > 0)
+
+    if (!portalMode)   // when the portal is up it does its own retry
     {
-      for (int attempt = 1; attempt <= 3; attempt++)
+      wifiPrefs.begin("wifi", true);
+      String savedSSID = wifiPrefs.getString("ssid", "");
+      String savedPass = wifiPrefs.getString("pass", "");
+      wifiPrefs.end();
+
+      if (savedSSID.length() > 0)
       {
-        LOGF("[WiFi] Reconnect attempt %d/3...\n", attempt);
-        WiFi.disconnect(false);
-        WiFi.begin(savedSSID.c_str(), savedPass.c_str());
-
-        unsigned long start = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
+        LOGLN("[WiFi] Connection lost, reconnecting...");
+        for (int attempt = 1; attempt <= 3 && !reconnected; attempt++)
         {
-          delay(200);
-          checkRelayTimers();
-          handleSerialCommands();
+          LOGF("[WiFi] Reconnect attempt %d/3...\n", attempt);
+          WiFi.disconnect(false);
+          WiFi.begin(savedSSID.c_str(), savedPass.c_str());
+          unsigned long start = millis();
+          while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
+          {
+            delay(200);
+            esp_task_wdt_reset();   // 3x10s here + stacked failing REST calls
+                                    // earlier this iteration can otherwise cross
+                                    // the 60s task watchdog and reboot mid-switch
+            checkRelayTimers();
+            handleSerialCommands();
+          }
+          reconnected = (WiFi.status() == WL_CONNECTED);
+          if (!reconnected)
+            LOGF("[WiFi] Attempt %d failed\n", attempt);
         }
-
-        if (WiFi.status() == WL_CONNECTED)
-        {
-          reconnected = true;
-          break;
-        }
-        LOGF("[WiFi] Attempt %d failed\n", attempt);
       }
     }
 
-    if (!reconnected)
-    {
-      LOGLN("[WiFi] All attempts failed, opening hotspot...");
-      startWiFiPortal();
-      return;
-    }
+    if (reconnected)
+      LOGLNS("[WiFi] Reconnected: " + WiFi.localIP().toString());
+    else
+      tryCellularFallback();   // brings up cellular if a modem + APN are present
+  }
 
-    LOGLNS("[WiFi] Reconnected: " + WiFi.localIP().toString());
+  // Background WiFi retry while on cellular with no portal (non-blocking).
+  retryWifiInBackground(now);
+
+  // Up-switch: on cellular but WiFi has come back and held steady for 15s.
+  static unsigned long wifiUpSince = 0;
+  if (activeTransport == TRANSPORT_CELLULAR)
+  {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      if (wifiUpSince == 0) wifiUpSince = now;
+      if (now - wifiUpSince >= 15000)
+      {
+        LOGLN("[Cellular] WiFi recovered — switching back from cellular");
+        modem.gprsDisconnect();
+        activeTransport = TRANSPORT_WIFI;
+        mqttClient.disconnect();
+        mqttClient.setClient(espClient);
+        wifiUpSince = 0;
+      }
+    }
+    else
+    {
+      wifiUpSince = 0;
+    }
+  }
+
+  // Cellular link health. Two failure modes, both end the same way — drop the
+  // transport so the down-switch block + tryCellularFallback() rebuild it (which
+  // reboots the modem on retry), or shouldOpenPortalOffline() opens the AP:
+  //   1. PDP session reported gone (SIM pulled, carrier dropped us, plan
+  //      expired) -> modem.isGprsConnected() == false.
+  //   2. "Zombie" session: the network tore the data path down but the modem
+  //      still reports the context up, so isGprsConnected() lies. Caught by the
+  //      MQTT link (plain TCP to the broker) staying down for minutes while we
+  //      believe we are on cellular. Observed on marginal 4G in the R6c soak.
+  static unsigned long cellDeadSince = 0;
+  static unsigned long lastCellCheck = 0;
+  static unsigned long mqttDownSince = 0;   // set below, after mqttClient.loop()
+  if (activeTransport == TRANSPORT_CELLULAR && now - lastCellCheck >= 20000)
+  {
+    lastCellCheck = now;
+    bool gprsUp     = modem.isGprsConnected();
+    bool mqttZombie = (mqttDownSince != 0 && now - mqttDownSince >= CELL_UPLINK_DEAD_MS);
+    if (gprsUp && !mqttZombie)
+    {
+      cellDeadSince = 0;
+    }
+    else if (cellDeadSince == 0)
+    {
+      cellDeadSince = now;
+      LOGF("[Cellular] Link unhealthy (gprs=%d mqttDown=%lus) — watching\n",
+           gprsUp, mqttDownSince ? (unsigned long)((now - mqttDownSince) / 1000) : 0UL);
+    }
+    else if (now - cellDeadSince >= 40000)
+    {
+      LOGLN("[Cellular] Link dead >40s — dropping to WiFi/portal (modem re-attaches on retry)");
+      modem.gprsDisconnect();
+      activeTransport = TRANSPORT_WIFI;   // modem stays powered; cellularCapable unchanged
+      mqttClient.disconnect();
+      mqttClient.setClient(espClient);
+      cellDeadSince = 0;
+      mqttDownSince = 0;
+    }
+  }
+
+  // --- Become fully online on whatever transport we have (once per boot) ---
+  // bringOnline() only sets startupTime on a successful registration, so if the
+  // first attempt fails (marginal link at boot) this stays true — rate-limit to
+  // 30s so it retries the full onboard instead of spinning it every iteration.
+  static unsigned long lastBringOnlineTry = 0;
+  if (startupTime == 0 &&
+      (WiFi.status() == WL_CONNECTED || activeTransport == TRANSPORT_CELLULAR) &&
+      (lastBringOnlineTry == 0 || now - lastBringOnlineTry >= 30000UL))
+  {
+    lastBringOnlineTry = now;
+    if (WiFi.status() == WL_CONNECTED)
+      wifiState = STATE_ONLINE;
+    bringOnline();
+  }
+
+  // Cellular has no SNTP daemon; if the boot-time modem time sync failed the
+  // clock stays near epoch 0 for the whole session (stamping 1970 into every
+  // row). Retry every 5 min while it still looks unset.
+  static unsigned long lastCellTimeRetry = 0;
+  if (activeTransport == TRANSPORT_CELLULAR && time(nullptr) < 1600000000UL &&
+      (lastCellTimeRetry == 0 || now - lastCellTimeRetry >= 300000UL))
+  {
+    lastCellTimeRetry = now;
+    LOGLN("[Cellular] Clock still unset — retrying modem time sync");
+    syncTimeFromModem();
+  }
+
+  // --- Open the AP if there's no other way to be useful (cellular already tried) ---
+  if (!portalMode && shouldOpenPortalOffline())
+  {
+    portalAutoOpened = true;
+    startWiFiPortal();
+  }
+  // An auto-opened offline portal has served its purpose once cellular is
+  // carrying traffic — close it so we don't broadcast a provisioning AP for the
+  // rest of the session (nothing else tears it down on the cellular path).
+  else if (portalMode && portalAutoOpened && activeTransport == TRANSPORT_CELLULAR)
+  {
+    LOGLN("[AP] Cellular fallback active — closing the auto-opened portal");
+    stopWiFiPortal();
+    portalAutoOpened = false;
+  }
+
+  // No uplink at all (cellular fallback didn't take) — skip the periodic work.
+  if (WiFi.status() != WL_CONNECTED && activeTransport != TRANSPORT_CELLULAR)
+  {
+    delay(500);
+    return;
   }
 
   if (!isRegistered)
@@ -393,6 +654,7 @@ void loop()
   }
 
   // --- Pending WiFi commands (deferred from MQTT callback to avoid re-entrancy) ---
+  // pendingWifiPortal is handled earlier by shouldOpenPortal().
   if (pendingWifiForget)
   {
     pendingWifiForget = false;
@@ -403,17 +665,20 @@ void loop()
     delay(500);
     ESP.restart();
   }
-  if (pendingWifiPortal)
-  {
-    pendingWifiPortal = false;
-    LOGLN("[WiFi] Starting portal on remote command...");
-    startWiFiPortal();
-  }
 
   // --- MQTT keepalive ---
   if (!mqttClient.connected())
     reconnectMQTT();
   mqttClient.loop();
+
+  // How long has MQTT been unreachable while we believe we are on cellular? The
+  // link-health check above uses this to catch a zombie data session that
+  // modem.isGprsConnected() misreports as still up. Clears on any reconnect or
+  // transport switch so it never carries a stale WiFi-era outage onto cellular.
+  if (mqttClient.connected() || activeTransport != TRANSPORT_CELLULAR)
+    mqttDownSince = 0;
+  else if (mqttDownSince == 0)
+    mqttDownSince = now;
 
   // --- Pending sensor rescan (deferred from MQTT callback to avoid re-entrancy) ---
   // Checked immediately after mqttClient.loop() (which is what actually sets the flag,

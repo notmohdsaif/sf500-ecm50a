@@ -77,6 +77,26 @@ extern DNSServer        dnsServer;
 // WiFi state
 extern WiFiState            wifiState;
 extern std::vector<NetItem> scanList;
+
+// Cellular fallback — true once the onboard 4G modem has been detected.
+// Set by lazy detection on first WiFi failure (see main.cpp loop()), never
+// during a normal boot. Non-4G boards leave this false forever.
+extern bool                 cellularCapable;
+// Latch so the ~11s modem probe runs at most once per boot even if WiFi
+// keeps failing on a board with no modem.
+extern bool                 cellularDetectAttempted;
+
+// Which network path is currently carrying MQTT + Supabase traffic. Supabase
+// HTTPS callers branch on this: WiFi uses HTTPClient over secureClient,
+// cellular uses ArduinoHttpClient over the modem's software-TLS client
+// (cellular.cpp). The state machine that flips this lives in main.cpp loop().
+enum NetworkTransport { TRANSPORT_WIFI, TRANSPORT_CELLULAR };
+extern NetworkTransport     activeTransport;
+
+// device_management.cellular_apn — APN for this unit's onboard 4G SIM.
+// Empty => cellular fallback stays inert even if the modem is present.
+// Refreshed by fetchDeviceConfig().
+extern String               cellularApn;
 extern bool                 portalMode;
 extern unsigned long        portalConnectStartMs;
 extern unsigned long        portalStartedAt;

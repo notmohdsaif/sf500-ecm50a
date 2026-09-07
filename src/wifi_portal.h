@@ -7,6 +7,7 @@
 // =====================================================
 
 void startWiFiPortal();
+void stopWiFiPortal();
 void handlePortalLoop();
 
 // Internal helpers (used within wifi_portal.cpp)
