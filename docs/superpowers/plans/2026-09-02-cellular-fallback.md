@@ -648,9 +648,21 @@ later none of 1-4 hold and no station connected for ~10 min, close it.)
   cycle. The 110s recovery beat the 3-min zombie watchdog, i.e. the link came back on its
   own this time; the watchdog remains the backstop for the no-return case (can't be forced
   on the bench — network-side; covered by inspection). **R6c PASS.**
-- [ ] **R6d** — Bump `FIRMWARE_VERSION` (check `git tag -l "v1.2.*"` for the next number),
-  commit, then `superpowers:finishing-a-development-branch` (merge `cellular-fallback` →
-  `main`, tag).
+- **Code review (`/code-review`, 2026-09-07) — 7 findings, all pre-existing branch code,
+  all fixed in commit `4e65b58`:** (1) `connectCellularData()` blocks past the 60s task WDT
+  with no feed — drop off the WDT for the bring-up, re-arm on exit (likely the real cause of
+  the R6b reboot). (2) `cellularSupabaseRequest()` no WDT feed around the TLS handshake +
+  `cellularSecureClient` had no timeout — feed + `setTimeout(15000)`. (3) `getSignalQuality()`
+  (blocking AT+CSQ) ran every publish — cache 30s. (4) no cellular clock re-sync — retry
+  `syncTimeFromModem()` every 5min while `time()` unset. (5) auto-opened offline portal never
+  torn down when cellular later succeeds — track why it opened, `stopWiFiPortal()` an
+  auto-opened one on cellular. (6) `bringOnline()` spun every loop on a failed first
+  registration — rate-limit to 30s. (7) `CELLTEST` hard-coded APN — use `cellularApn`.
+  **31-min regression soak on sf500_107888: 833 msgs, zero reboots, no WDT trips, CSQ 28.**
+
+- [ ] **R6d** — Bump `FIRMWARE_VERSION` 1.2.5 -> **1.2.6**, commit, then
+  `superpowers:finishing-a-development-branch` (merge `cellular-fallback` → `main`, tag
+  `v1.2.6`). Firmware repo has only `origin` (GitHub) — no gitlab sync.
 
 ### Dashboard follow-up (separate repo: `Dashboard/sf500`)
 
