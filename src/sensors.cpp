@@ -446,7 +446,18 @@ void readSensors()
       cellObj["active"]  = (activeTransport == TRANSPORT_CELLULAR);
       cellObj["apn"]     = cellularApn;
       if (activeTransport == TRANSPORT_CELLULAR)
-        cellObj["signal"] = modem.getSignalQuality();
+      {
+        // AT+CSQ is a blocking round-trip on the same UART mux MQTT rides on;
+        // this builder runs every publish. Signal moves slowly — cache 30s.
+        static int          csqCache = 99;
+        static unsigned long csqAt   = 0;
+        if (csqAt == 0 || millis() - csqAt >= 30000)
+        {
+          csqCache = modem.getSignalQuality();
+          csqAt    = millis();
+        }
+        cellObj["signal"] = csqCache;
+      }
     }
 
     doc["fw"] = FIRMWARE_VERSION;

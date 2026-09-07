@@ -311,7 +311,7 @@ void handleSerialCommands()
     {
       LOGLN("[Cellular] No modem detected — CELLTEST aborted");
     }
-    else if (connectCellularData("ansar"))
+    else if (connectCellularData(cellularApn.length() ? cellularApn.c_str() : "ansar"))
     {
       mqttClient.disconnect();
       mqttClient.setClient(cellularClient);

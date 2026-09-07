@@ -476,10 +476,16 @@ void loop()
   }
 
   // --- Captive portal ---
+  // Tracks WHY the AP is open: an auto-opened offline portal yields to cellular
+  // once fallback succeeds; a human-requested one stays up for on-site setup.
+  static bool portalAutoOpened = false;
   if (portalMode)
     handlePortalLoop();   // runs its own WiFi retry; clears portalMode on teardown
   else if (portalRequestedByHuman())
+  {
+    portalAutoOpened = false;
     startWiFiPortal();     // explicit request — open now, before any blocking work
+  }
 
   // --- Transport state machine: WiFi <-> cellular ---
   // Down-switch: WiFi is gone and we're still nominally on WiFi. Try a few
@@ -592,17 +598,47 @@ void loop()
   }
 
   // --- Become fully online on whatever transport we have (once per boot) ---
+  // bringOnline() only sets startupTime on a successful registration, so if the
+  // first attempt fails (marginal link at boot) this stays true — rate-limit to
+  // 30s so it retries the full onboard instead of spinning it every iteration.
+  static unsigned long lastBringOnlineTry = 0;
   if (startupTime == 0 &&
-      (WiFi.status() == WL_CONNECTED || activeTransport == TRANSPORT_CELLULAR))
+      (WiFi.status() == WL_CONNECTED || activeTransport == TRANSPORT_CELLULAR) &&
+      (lastBringOnlineTry == 0 || now - lastBringOnlineTry >= 30000UL))
   {
+    lastBringOnlineTry = now;
     if (WiFi.status() == WL_CONNECTED)
       wifiState = STATE_ONLINE;
     bringOnline();
   }
 
+  // Cellular has no SNTP daemon; if the boot-time modem time sync failed the
+  // clock stays near epoch 0 for the whole session (stamping 1970 into every
+  // row). Retry every 5 min while it still looks unset.
+  static unsigned long lastCellTimeRetry = 0;
+  if (activeTransport == TRANSPORT_CELLULAR && time(nullptr) < 1600000000UL &&
+      (lastCellTimeRetry == 0 || now - lastCellTimeRetry >= 300000UL))
+  {
+    lastCellTimeRetry = now;
+    LOGLN("[Cellular] Clock still unset — retrying modem time sync");
+    syncTimeFromModem();
+  }
+
   // --- Open the AP if there's no other way to be useful (cellular already tried) ---
   if (!portalMode && shouldOpenPortalOffline())
+  {
+    portalAutoOpened = true;
     startWiFiPortal();
+  }
+  // An auto-opened offline portal has served its purpose once cellular is
+  // carrying traffic — close it so we don't broadcast a provisioning AP for the
+  // rest of the session (nothing else tears it down on the cellular path).
+  else if (portalMode && portalAutoOpened && activeTransport == TRANSPORT_CELLULAR)
+  {
+    LOGLN("[AP] Cellular fallback active — closing the auto-opened portal");
+    stopWiFiPortal();
+    portalAutoOpened = false;
+  }
 
   // No uplink at all (cellular fallback didn't take) — skip the periodic work.
   if (WiFi.status() != WL_CONNECTED && activeTransport != TRANSPORT_CELLULAR)

@@ -326,10 +326,18 @@ void handlePortalLoop()
   if (apCloseAt > 0 && millis() >= apCloseAt)
   {
     apCloseAt = 0;
-    dnsServer.stop();
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    portalMode = false; // main loop exits portal mode after this
-    LOGLN("[AP] Closed — STA mode only");
+    stopWiFiPortal();
   }
+}
+
+// Tear the AP down and return to STA mode. Safe to call any time portalMode is
+// true — used by the timed auto-close above and by the main loop when cellular
+// fallback takes over an auto-opened portal.
+void stopWiFiPortal()
+{
+  dnsServer.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  portalMode = false; // main loop exits portal mode after this
+  LOGLN("[AP] Closed — STA mode only");
 }

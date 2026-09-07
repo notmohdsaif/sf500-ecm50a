@@ -90,6 +90,13 @@ bool connectCellularData(const char *apn)
 {
   LOGF("[Cellular] Bringing up data session (APN=%s)...\n", apn);
 
+  // modem.init() / waitForNetwork / gprsConnect (QIACT waits up to 150s
+  // internally) / modem.restart() each block far past the 60s task watchdog
+  // and cannot be fed mid-call. Drop off the WDT for the duration and re-arm
+  // on every exit — an AT-level hang still bottoms out on the modem's own
+  // response timeouts, so this can't wedge the loop indefinitely.
+  esp_task_wdt_delete(NULL);
+
   esp_task_wdt_reset();
   modem.init();
   bool ok = bringUpDataSession(apn, 30000);
@@ -113,6 +120,9 @@ bool connectCellularData(const char *apn)
     }
   }
 
+  esp_task_wdt_add(NULL);
+  esp_task_wdt_reset();
+
   if (!ok)
   {
     LOGLN("[Cellular] FAIL: no data session");
@@ -120,6 +130,7 @@ bool connectCellularData(const char *apn)
   }
 
   cellularSecureClient.setCACert(CELLULAR_CA_CERT);
+  cellularSecureClient.setTimeout(15000);   // bound the software-TLS handshake + socket reads
   LOGF("[Cellular] Data connected, IP=%s\n", modem.localIP().toString().c_str());
   return true;
 }
@@ -207,10 +218,12 @@ int cellularSupabaseRequest(const char *method, const String &url,
   HttpClient http(cellularSecureClient, host, 443);
   http.setHttpResponseTimeout(15000);
 
+  esp_task_wdt_reset();   // the TLS handshake in startRequest() can take seconds
   http.beginRequest();
   int ret = http.startRequest(path.c_str(), method, contentType,
                               reqBody.length() > 0 ? (int)reqBody.length() : -1,
                               nullptr);
+  esp_task_wdt_reset();
   if (ret != HTTP_SUCCESS)
   {
     http.stop();
