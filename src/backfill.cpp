@@ -48,12 +48,13 @@ struct DrainResult
 // must stop the batch (a transient failure that should be retried, not skipped).
 // A 4xx is permanent — the row will never be accepted (RLS, constraint,
 // malformed) — so it is dropped and the batch continues, otherwise one bad row
-// would wedge the whole journal forever.
+// would wedge the whole journal forever. 408/429 are the exceptions: request
+// timeout and rate-limit are transient, so back off and retry, never drop.
 static bool classifyPost(int code, const JournalRec& rec, DrainResult& r)
 {
   if (code >= 200 && code < 300) { r.advanced++; r.posted++;  return true; }
 
-  if (code >= 400 && code < 500)
+  if (code >= 400 && code < 500 && code != 408 && code != 429)
   {
     LOGF("[backfill] dropping %s row (%d): %s\n", rec.tbl.c_str(), code,
          rec.row.substring(0, 160).c_str());
@@ -110,6 +111,10 @@ static DrainResult drainWifi(const JournalRec* recs, int n)
     if (!classifyPost(code, recs[i], r)) break;
   }
   http.end();
+  // Release the socket + mbedTLS context now. Backfill is the only user of
+  // bfClient and it stops running once the journal is empty — without this the
+  // reuse keep-alive would pin ~40 KB of heap indefinitely between ticks.
+  bfClient.stop();
   return r;
 }
 
@@ -148,7 +153,8 @@ void backfillTick()
   if (r.advanced > 0)
   {
     journalWriteOffset(ends[r.advanced - 1]);
-    if (r.posted > 0) noteUplinkResult(true);
+    // Any HTTP response (2xx or a 4xx drop) proves the uplink is alive.
+    noteUplinkResult(true);
     LOGF("[backfill] %d/%d replayed, %d dropped, offset -> %u (pending %u B)\n",
          r.posted, n, r.dropped,
          (unsigned)ends[r.advanced - 1], (unsigned)journalPendingBytes());
