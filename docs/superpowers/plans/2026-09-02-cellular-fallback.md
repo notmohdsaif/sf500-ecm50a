@@ -625,9 +625,22 @@ later none of 1-4 hold and no station connected for ~10 min, close it.)
   no `Device booted` in activity_log. Caveat: the re-verify run only had ~65s on WiFi
   before the pull, so the worst-case timer stack wasn't re-stressed on HW — but the fix is
   a guaranteed WDT feed in the previously-unfed 30s window.
-- [ ] **R6c** — Task 5.3 soak: 30+ min on cellular with sensor/schedule activity, watch for
-  the v1.2.5 stack-canary signature (`Guru Meditation` / `Stack canary`). `bringOnline()`
-  now runs on `loopTask` on the cellular path too — extra stack pressure to watch.
+- [~] **R6c** — Cellular soak, sf500_107888, 2026-09-07. First 30 min: **clean** — 816 MQTT
+  msgs continuous, no gap, no reboot (activity_log `boots_since_soak_start=0`), no
+  `Guru Meditation` / stack-canary. `bringOnline()`-on-loopTask over cellular held.
+  **BUT** ~2 min after the 30-min mark the device went fully dark ~15 min (no MQTT, no
+  heartbeat) and did NOT self-recover or open the AP — needed a power cycle. Firmware
+  boots + re-establishes cellular fine (CSQ 26-28, marginal). Root cause: link-health
+  check keyed only on `modem.isGprsConnected()`, which misreports a network-side
+  "zombie" data-path teardown as still up -> the `dead >40s -> drop to WiFi/portal`
+  recovery never fired. **Fixed** (commit `d9a1f47`): added an MQTT-unreachable-for-3min
+  trigger (`CELL_UPLINK_DEAD_MS`) that runs the same recovery regardless of
+  `isGprsConnected()`. Cannot be forced on the bench (network-side event); verified by
+  inspection (reuses the proven recovery path, mode-1 logic byte-identical) + a re-soak.
+  Also fixed here: **R6b watchdog reboot** (commit `fa70de1`) — the 3x10s WiFi-reconnect
+  loop had no `esp_task_wdt_reset()`, so a warmed-up down-switch (stacked failing REST
+  timeouts + 30s reconnect) crossed the 60s task WDT. Re-soak in progress to confirm no
+  recurrence of the dark event with `d9a1f47`.
 - [ ] **R6d** — Bump `FIRMWARE_VERSION` (check `git tag -l "v1.2.*"` for the next number),
   commit, then `superpowers:finishing-a-development-branch` (merge `cellular-fallback` →
   `main`, tag).
