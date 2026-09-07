@@ -639,8 +639,15 @@ later none of 1-4 hold and no station connected for ~10 min, close it.)
   inspection (reuses the proven recovery path, mode-1 logic byte-identical) + a re-soak.
   Also fixed here: **R6b watchdog reboot** (commit `fa70de1`) — the 3x10s WiFi-reconnect
   loop had no `esp_task_wdt_reset()`, so a warmed-up down-switch (stacked failing REST
-  timeouts + 30s reconnect) crossed the 60s task WDT. Re-soak in progress to confirm no
-  recurrence of the dark event with `d9a1f47`.
+  timeouts + 30s reconnect) crossed the 60s task WDT.
+
+  **Re-soak with both fixes — PASS (2026-09-07, 45 min, sf500_107888):** 1143 MQTT msgs,
+  **zero reboots** (activity_log confirms), no stack-canary. One ~110s MQTT blip at +28min
+  (marginal 4G, CSQ 25-28) — **self-recovered, no reboot, no power cycle**, heartbeat
+  resumed within seconds. Pre-fix that same class of event was 15 min dark + manual power
+  cycle. The 110s recovery beat the 3-min zombie watchdog, i.e. the link came back on its
+  own this time; the watchdog remains the backstop for the no-return case (can't be forced
+  on the bench — network-side; covered by inspection). **R6c PASS.**
 - [ ] **R6d** — Bump `FIRMWARE_VERSION` (check `git tag -l "v1.2.*"` for the next number),
   commit, then `superpowers:finishing-a-development-branch` (merge `cellular-fallback` →
   `main`, tag).
