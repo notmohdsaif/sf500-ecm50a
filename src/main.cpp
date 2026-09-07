@@ -552,37 +552,42 @@ void loop()
     }
   }
 
-  // Cellular link health: if the PDP session is gone (SIM pulled, carrier
-  // dropped us, data plan expired) and stays gone, stop treating cellular as
-  // our transport. The down-switch block + tryCellularFallback() then either
-  // re-establish it or, failing that, shouldOpenPortalOffline() opens the AP.
+  // Cellular link health. Two failure modes, both end the same way — drop the
+  // transport so the down-switch block + tryCellularFallback() rebuild it (which
+  // reboots the modem on retry), or shouldOpenPortalOffline() opens the AP:
+  //   1. PDP session reported gone (SIM pulled, carrier dropped us, plan
+  //      expired) -> modem.isGprsConnected() == false.
+  //   2. "Zombie" session: the network tore the data path down but the modem
+  //      still reports the context up, so isGprsConnected() lies. Caught by the
+  //      MQTT link (plain TCP to the broker) staying down for minutes while we
+  //      believe we are on cellular. Observed on marginal 4G in the R6c soak.
   static unsigned long cellDeadSince = 0;
   static unsigned long lastCellCheck = 0;
+  static unsigned long mqttDownSince = 0;   // set below, after mqttClient.loop()
   if (activeTransport == TRANSPORT_CELLULAR && now - lastCellCheck >= 20000)
   {
     lastCellCheck = now;
-    if (modem.isGprsConnected())
+    bool gprsUp     = modem.isGprsConnected();
+    bool mqttZombie = (mqttDownSince != 0 && now - mqttDownSince >= CELL_UPLINK_DEAD_MS);
+    if (gprsUp && !mqttZombie)
     {
       cellDeadSince = 0;
     }
-    else
+    else if (cellDeadSince == 0)
     {
-      if (cellDeadSince == 0)
-      {
-        cellDeadSince = now;
-        LOGLN("[Cellular] Data session lost — watching...");
-      }
-      else if (now - cellDeadSince >= 40000)
-      {
-        LOGLN("[Cellular] Data session dead >40s — dropping to WiFi/portal");
-        modem.gprsDisconnect();
-        activeTransport = TRANSPORT_WIFI;   // modem stays powered; cellularCapable unchanged
-        mqttClient.disconnect();
-        mqttClient.setClient(espClient);
-        cellDeadSince = 0;
-        // connectCellularData() will reboot the modem on its next retry so a
-        // re-inserted SIM gets re-scanned.
-      }
+      cellDeadSince = now;
+      LOGF("[Cellular] Link unhealthy (gprs=%d mqttDown=%lus) — watching\n",
+           gprsUp, mqttDownSince ? (unsigned long)((now - mqttDownSince) / 1000) : 0UL);
+    }
+    else if (now - cellDeadSince >= 40000)
+    {
+      LOGLN("[Cellular] Link dead >40s — dropping to WiFi/portal (modem re-attaches on retry)");
+      modem.gprsDisconnect();
+      activeTransport = TRANSPORT_WIFI;   // modem stays powered; cellularCapable unchanged
+      mqttClient.disconnect();
+      mqttClient.setClient(espClient);
+      cellDeadSince = 0;
+      mqttDownSince = 0;
     }
   }
 
@@ -629,6 +634,15 @@ void loop()
   if (!mqttClient.connected())
     reconnectMQTT();
   mqttClient.loop();
+
+  // How long has MQTT been unreachable while we believe we are on cellular? The
+  // link-health check above uses this to catch a zombie data session that
+  // modem.isGprsConnected() misreports as still up. Clears on any reconnect or
+  // transport switch so it never carries a stale WiFi-era outage onto cellular.
+  if (mqttClient.connected() || activeTransport != TRANSPORT_CELLULAR)
+    mqttDownSince = 0;
+  else if (mqttDownSince == 0)
+    mqttDownSince = now;
 
   // --- Pending sensor rescan (deferred from MQTT callback to avoid re-entrancy) ---
   // Checked immediately after mqttClient.loop() (which is what actually sets the flag,

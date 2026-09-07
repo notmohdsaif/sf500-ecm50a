@@ -38,6 +38,10 @@
 #define MODEM_TX_PIN  39 // ESP32 TX -> modem RXD
 #define MODEM_RX_PIN  40 // ESP32 RX <- modem TXD
 #define MODEM_BAUD    115200
+// While on cellular, if MQTT (plain TCP to the broker) stays unreachable this
+// long, treat the data session as dead even when modem.isGprsConnected() still
+// reports it up (network-side "zombie" teardown) and force a transport rebuild.
+#define CELL_UPLINK_DEAD_MS (3UL * 60UL * 1000UL)
 
 // Sensor Configuration — ID ranges match admin panel SENSOR_TYPES
 #define EC_SENSOR_DEFAULT 3 // Try this ID first before range scan
