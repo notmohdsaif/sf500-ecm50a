@@ -10,35 +10,107 @@
 #include "cellular.h"   // cellularSupabaseRequest()
 #include "logger.h"
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+// Backfill gets its OWN TLS client, kept off the shared global `secureClient`.
+// It POSTs in bursts (a whole batch per tick, every loop while the journal has
+// content). Sharing `secureClient` with the periodic REST calls let one burst's
+// socket churn wedge every later handshake on that client — the device then
+// latched RS_OFFLINE_AUTONOMOUS with a healthy MQTT link and the journal never
+// drained. A dedicated client, plus ONE reused TLS connection per batch, keeps
+// that churn clear of the periodic calls.
+static WiFiClientSecure bfClient;
+static bool             bfClientReady = false;
+
+static void ensureBfClient()
+{
+  if (bfClientReady) return;
+  bfClient.setInsecure();
+  bfClient.setHandshakeTimeout(5);
+  bfClientReady = true;
+}
 
 static bool doseCritical()
 {
   return autoState == AUTO_DOSING || autoState == AUTO_PRE_MIX || autoState == AUTO_POST_MIX;
 }
 
-// One row to /rest/v1/<tbl>, over whichever transport is live. Returns true on 2xx.
-static bool postRow(const String& tbl, const String& rowJson)
+// Outcome of draining one batch.
+struct DrainResult
 {
-  String url = String(SUPABASE_URL) + "/rest/v1/" + tbl;
+  int  advanced     = 0;   // rows to move the journal offset past (2xx + dropped 4xx)
+  int  posted       = 0;   // rows that got a 2xx — proof the uplink is alive
+  int  dropped      = 0;   // rows permanently rejected (4xx) and skipped
+  bool transientStop = false;  // stopped on a 5xx / network error — retry next tick
+};
 
-  if (activeTransport == TRANSPORT_CELLULAR)
+// Classify one POST result and fold it into `r`. Returns false when the caller
+// must stop the batch (a transient failure that should be retried, not skipped).
+// A 4xx is permanent — the row will never be accepted (RLS, constraint,
+// malformed) — so it is dropped and the batch continues, otherwise one bad row
+// would wedge the whole journal forever.
+static bool classifyPost(int code, const JournalRec& rec, DrainResult& r)
+{
+  if (code >= 200 && code < 300) { r.advanced++; r.posted++;  return true; }
+
+  if (code >= 400 && code < 500)
   {
-    String resp;
-    int code = cellularSupabaseRequest("POST", url, rowJson, "application/json",
-                                       "return=minimal", resp);
-    return code >= 200 && code < 300;
+    LOGF("[backfill] dropping %s row (%d): %s\n", rec.tbl.c_str(), code,
+         rec.row.substring(0, 160).c_str());
+    r.advanced++; r.dropped++;
+    return true;
   }
 
+  LOGF("[backfill] POST %s transient fail (%d) — will retry\n", rec.tbl.c_str(), code);
+  r.transientStop = true;
+  return false;
+}
+
+// Drain recs[0..n) over cellular — one request each (the modem layer owns its
+// session).
+static DrainResult drainCellular(const JournalRec* recs, int n)
+{
+  DrainResult r;
+  for (int i = 0; i < n; i++)
+  {
+    String url = String(SUPABASE_URL) + "/rest/v1/" + recs[i].tbl;
+    String resp;
+    int code = cellularSupabaseRequest("POST", url, recs[i].row, "application/json",
+                                       "return=minimal", resp);
+    if (!classifyPost(code, recs[i], r)) break;
+  }
+  return r;
+}
+
+// Drain recs[0..n) over WiFi, reusing ONE TLS connection to Supabase for the
+// whole batch, on backfill's dedicated client.
+static DrainResult drainWifi(const JournalRec* recs, int n)
+{
+  ensureBfClient();
+
   HTTPClient http;
-  if (!http.begin(secureClient, url)) return false;
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.addHeader("Prefer", "return=minimal");
-  http.setTimeout(4000);
-  int code = http.POST(rowJson);
+  http.setReuse(true);          // hold the socket up across the batch
+  http.setTimeout(8000);
+
+  DrainResult r;
+  for (int i = 0; i < n; i++)
+  {
+    String url = String(SUPABASE_URL) + "/rest/v1/" + recs[i].tbl;
+    if (!http.begin(bfClient, url))
+    {
+      LOGLN("[backfill] http.begin failed — will retry");
+      r.transientStop = true;
+      break;
+    }
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.addHeader("Prefer", "return=minimal");
+    int code = http.POST(recs[i].row);
+    if (!classifyPost(code, recs[i], r)) break;
+  }
   http.end();
-  return code >= 200 && code < 300;
+  return r;
 }
 
 void backfillTick()
@@ -69,26 +141,23 @@ void backfillTick()
     return;
   }
 
-  int committed = 0;
-  for (int i = 0; i < n; i++)
-  {
-    if (!postRow(recs[i].tbl, recs[i].row))
-    {
-      noteUplinkResult(false);
-      break;
-    }
-    committed = i + 1;
-  }
+  DrainResult r = (activeTransport == TRANSPORT_CELLULAR)
+                    ? drainCellular(recs, n)
+                    : drainWifi(recs, n);
 
-  if (committed > 0)
+  if (r.advanced > 0)
   {
-    journalWriteOffset(ends[committed - 1]);
-    noteUplinkResult(true);
-    LOGF("[backfill] %d row(s) replayed, offset -> %u (pending %u B)\n",
-         committed, (unsigned)ends[committed - 1], (unsigned)journalPendingBytes());
+    journalWriteOffset(ends[r.advanced - 1]);
+    if (r.posted > 0) noteUplinkResult(true);
+    LOGF("[backfill] %d/%d replayed, %d dropped, offset -> %u (pending %u B)\n",
+         r.posted, n, r.dropped,
+         (unsigned)ends[r.advanced - 1], (unsigned)journalPendingBytes());
 
     if (journalReadOffset() >= JOURNAL_COMPACT_THRESHOLD)
       journalCompact();
     journalEnforceRetention();
   }
+
+  if (r.transientStop)
+    noteUplinkResult(false);
 }

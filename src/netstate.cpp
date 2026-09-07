@@ -56,22 +56,28 @@ void noteUplinkResult(bool ok)
 {
   if (ok)
   {
+    if (!uplinkOk) LOGLN("[net] uplink UP (REST ok)");
     uplinkOk   = true;
     failStreak = 0;
     return;
   }
   lastProbeAt = millis();   // restart the probe interval from this failure
   if (failStreak < 255) failStreak++;
+  if (failStreak == UPLINK_FAIL_DEBOUNCE && uplinkOk)
+    LOGF("[net] uplink DOWN (%u consecutive REST failures)\n", (unsigned)failStreak);
   if (failStreak >= UPLINK_FAIL_DEBOUNCE) uplinkOk = false;
 }
 
 void noteMqttState(bool connected)
 {
-  // A live broker connection is proof the uplink works. A disconnect is
-  // advisory only — a Supabase REST result is the authoritative "offline"
-  // signal (the broker can drop us mid-loop while WAN is still fine).
+  // A live broker connection is proof the uplink works. Called every loop (not
+  // just on the connect edge) so REST can recover the moment the broker is up
+  // again without waiting for a stale offline probe. A disconnect is advisory
+  // only — a Supabase REST result is the authoritative "offline" signal (the
+  // broker can drop us mid-loop while WAN is still fine).
   if (connected)
   {
+    if (!uplinkOk) LOGLN("[net] uplink UP (MQTT connected)");
     uplinkOk   = true;
     failStreak = 0;
   }

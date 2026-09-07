@@ -405,6 +405,7 @@ void updateDeviceStatus(const char *status)
   http.setTimeout(6000);   // runs every 30s in loop() — keep well under MQTT keepalive
   int code = http.PATCH(payload);
   noteUplinkResult(code >= 200 && code < 300);
+  if (!(code >= 200 && code < 300)) LOGF("[status] update failed: %d\n", code);
   http.end();
 }
 
@@ -494,7 +495,7 @@ void fetchDeviceConfig()
     http.end();
   }
   noteUplinkResult(code == 200);
-  if (code != 200) return;
+  if (code != 200) { LOGF("[cfg] fetch failed: %d\n", code); return; }
 
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
@@ -814,7 +815,7 @@ void fetchSchedules()
     http.end();
   }
   noteUplinkResult(code == 200);
-  if (code != 200) return;
+  if (code != 200) { LOGF("[schedules] fetch failed: %d\n", code); return; }
 
   DynamicJsonDocument doc(4096);
   if (doc.capacity() == 0) { LOGLN("[SCHEDULE] JSON alloc failed (low heap)"); return; }

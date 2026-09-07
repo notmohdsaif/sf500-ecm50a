@@ -808,6 +808,11 @@ void loop()
     reconnectMQTT();
   mqttClient.loop();
 
+  // A live broker connection is proof the WAN path works — keep the REST uplink
+  // armed off it every loop, not just on the reconnect edge, so a device whose
+  // broker link never drops can still recover REST after a transient failure.
+  noteMqttState(mqttClient.connected());
+
   // How long has MQTT been unreachable while we believe we are on cellular? The
   // link-health check above uses this to catch a zombie data session that
   // modem.isGprsConnected() misreports as still up. Clears on any reconnect or
@@ -859,6 +864,13 @@ void loop()
   }
 
   // --- Periodic tasks (backend-facing; the control plane ran earlier) ---
+
+  // Drain the SD telemetry journal first, before the periodic REST calls — it
+  // is the recovery path after an outage and must not be starved of the single
+  // offline probe slot by the liveness calls below. Self-rate-limited, bounded,
+  // skipped mid-dose.
+  backfillTick();
+
   if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL)
   {
     updateDeviceStatus("online");
@@ -876,10 +888,6 @@ void loop()
     fetchSchedules();
     lastScheduleFetch = now;
   }
-
-  // Drain the SD telemetry journal to Supabase (self-rate-limited, bounded,
-  // skipped mid-dose).
-  backfillTick();
 
   // --- Tasmota plug state poll (HTTP transport only; inert on MQTT-transport devices) ---
   if (plugUseHttp && now - lastPlugHttpPoll >= PLUG_HTTP_POLL_INTERVAL)
