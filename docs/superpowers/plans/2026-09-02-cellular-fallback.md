@@ -599,11 +599,32 @@ later none of 1-4 hold and no station connected for ~10 min, close it.)
 
 ### Still to do (needs sf500_107888 back on a WiFi antenna)
 
-- [ ] **R6a** — Healthy-WiFi regression check: fresh flash, onboard over WiFi, confirm the
-  WiFi path is unchanged (bringOnline from setup(), lazy detect never fires, no fallback,
-  no AP).
-- [ ] **R6b** — WiFi → cellular → WiFi live cycle: kill the AP → `Fallback active` (AP must
-  stay closed) → all periodic traffic over cellular → restore WiFi → switch-back after 15s.
+- [x] **R6a** — Healthy-WiFi regression check: PASS 2026-09-07 on sf500_107888. Flashed
+  tip 80f56a9, entered WiFi creds via the (cellular-triggered) portal, rebooted onto
+  'REDtone_SF'. Boot log: WiFi auto-connect -> `Syncing NTP` (WiFi path, NOT
+  `[Cellular] Time set from modem`) -> `[REG] HTTP 200` over WiFi -> OTA check runs ->
+  sensors/smartcal/rain/config init -> `MQTT connected`. **No `[Cellular] Modem detected`,
+  no fallback attempt, no AP** — lazy modem probe never fired because WiFi connected.
+  MQTT payload carries `wifi:{ssid,rssi,ip}` and NO `cellular` block (cellularCapable
+  false — a non-4G board looks identical). bringOnline() ran from setup() in one pass.
+- [x] **R6b** — WiFi <-> cellular live cycle: PASS 2026-09-07 on sf500_107888 (WiFi dropped
+  by pulling the antenna). Down-switch: `start_ssl_client: -1` -> `[WiFi] Connection lost` ->
+  3x10s reconnect -> `[Cellular] Modem detected` (lazy) -> `Bringing up data session` ->
+  `Data connected` -> `Fallback active` -> MQTT reconnect over cellular -> `[SCHEDULE] 0
+  active` (fetchSchedules over cell); heartbeat stayed <30s fresh in device_management.
+  **AP did NOT open** (user-confirmed, no `sfconnect.com`). Up-switch: antenna back ->
+  `wifi:{}` returns -> after 15s hold `[Cellular] WiFi recovered — switching back` ->
+  `cell_active:false`; live, no reboot (confirmed twice).
+  **Bug found + fixed** (main.cpp, this session): the first down-switch (with the device
+  warmed up ~2 min so every periodic REST timer was due) rebooted mid-switch — `loop()`
+  feeds the 60s task WDT once per iteration, and the whole down-switch runs in one
+  iteration: stacked failing Supabase timeouts (6-15s each) + the 3x10s reconnect loop,
+  which had NO `esp_task_wdt_reset()`, crossed 60s -> hard reset. Recovered on cellular
+  each time (no boot loop, ~30s blip). Fix = one `esp_task_wdt_reset()` inside the
+  reconnect inner-while loop. Re-verified: down-switch completes clean, no `[DIAG] Reset:`,
+  no `Device booted` in activity_log. Caveat: the re-verify run only had ~65s on WiFi
+  before the pull, so the worst-case timer stack wasn't re-stressed on HW — but the fix is
+  a guaranteed WDT feed in the previously-unfed 30s window.
 - [ ] **R6c** — Task 5.3 soak: 30+ min on cellular with sensor/schedule activity, watch for
   the v1.2.5 stack-canary signature (`Guru Meditation` / `Stack canary`). `bringOnline()`
   now runs on `loopTask` on the cellular path too — extra stack pressure to watch.

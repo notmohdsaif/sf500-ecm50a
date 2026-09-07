@@ -507,6 +507,9 @@ void loop()
           while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
           {
             delay(200);
+            esp_task_wdt_reset();   // 3x10s here + stacked failing REST calls
+                                    // earlier this iteration can otherwise cross
+                                    // the 60s task watchdog and reboot mid-switch
             checkRelayTimers();
             handleSerialCommands();
           }
