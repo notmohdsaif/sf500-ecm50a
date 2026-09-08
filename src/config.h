@@ -18,6 +18,13 @@
 #define AUTO_CONNECT_TIMEOUT_MS 15000UL
 #define PORTAL_SAVED_RETRY_INTERVAL_MS (5UL * 60UL * 1000UL) // retry saved creds every 5 min while portal is open
 
+// Non-blocking WiFi down-switch recovery (loop(), tickWifiReconnect()). The
+// control plane keeps its 1s cadence during a WiFi outage because none of this
+// blocks — association completes across later loop iterations.
+#define WIFI_RECONNECT_KICK_MS   20000UL   // re-issue WiFi.begin() this often while the link is down
+#define WIFI_RECONNECT_CYCLE_MS  120000UL  // full radio power-cycle this often while down (recovers a wedged supplicant after the AP vanished and returned)
+#define WIFI_DOWN_FALLBACK_MS    30000UL   // link down this long -> (re)try cellular fallback (no-op on non-4G boards; matches the old blocking loop's ~30s to first fallback)
+
 // Supabase
 #define SUPABASE_URL "https://qkqeysggrqhxizkdmbhx.supabase.co"
 

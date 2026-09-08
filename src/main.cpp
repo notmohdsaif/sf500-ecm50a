@@ -240,6 +240,92 @@ static void retryWifiInBackground(unsigned long now)
   WiFi.begin(ssid.c_str(), pass.c_str());
 }
 
+// --- Non-blocking WiFi down-switch (activeTransport == TRANSPORT_WIFI) ---
+// Replaces the old blocking 3x10s reconnect loop, which ran before the control
+// plane in loop() and, on a non-4G board (no cellular to hand off to), starved
+// readSensors()/checkAutoDosing() to a ~30s cadence for the whole outage.
+static unsigned long wifiDownSince       = 0;
+static unsigned long wifiLastKick        = 0;
+static unsigned long wifiLastCycle       = 0;
+static unsigned long wifiLastFallbackTry = 0;
+
+// Link is good again — reset the ladder.
+static void clearWifiReconnect()
+{
+  if (wifiDownSince == 0) return;
+  LOGLNS("[WiFi] Re-associated: " + WiFi.localIP().toString());
+  wifiDownSince = wifiLastKick = wifiLastCycle = wifiLastFallbackTry = 0;
+}
+
+// Called every loop while we believe we are on WiFi but WL_CONNECTED is false.
+// Never blocks: one association kick per pass on a back-off ladder, association
+// finishes (or not) across later iterations.
+static void tickWifiReconnect(unsigned long now)
+{
+  if (wifiDownSince == 0)
+  {
+    wifiDownSince       = now;
+    wifiLastKick        = 0;
+    wifiLastCycle       = now;   // hold off the first power-cycle by one interval
+    wifiLastFallbackTry = 0;
+    LOGLN("[WiFi] Link lost — non-blocking reconnect started");
+  }
+
+  // Association kicks — skipped while the portal owns the radio (handlePortalLoop
+  // runs its own saved-credential retry). This runs every loop for the whole
+  // outage, so touch NVS only when a kick is actually due, not every pass.
+  if (!portalMode)
+  {
+    bool cycleDue = (now - wifiLastCycle >= WIFI_RECONNECT_CYCLE_MS);
+    bool kickDue  = (wifiLastKick == 0 || now - wifiLastKick >= WIFI_RECONNECT_KICK_MS);
+
+    if (cycleDue || kickDue)
+    {
+      wifiPrefs.begin("wifi", true);
+      String ssid = wifiPrefs.getString("ssid", "");
+      String pass = wifiPrefs.getString("pass", "");
+      wifiPrefs.end();
+
+      if (!ssid.isEmpty())
+      {
+        if (cycleDue)
+        {
+          // Full radio power-cycle. A bare WiFi.begin() loop does NOT re-associate
+          // after the AP disappeared entirely and came back (observed on a hotspot
+          // killed by airplane mode) — the supplicant needs the OFF->STA bounce.
+          wifiLastCycle = now;
+          wifiLastKick  = now;
+          LOGLN("[WiFi] reconnect: radio power-cycle");
+          WiFi.disconnect(true);         // drop link + radio off (WIFI_OFF below fully resets the iface)
+          WiFi.mode(WIFI_OFF);
+          delay(200);                    // bounded settle, not a wait loop
+          WiFi.mode(WIFI_STA);
+          WiFi.setAutoReconnect(true);
+          WiFi.begin(ssid.c_str(), pass.c_str());
+        }
+        else
+        {
+          wifiLastKick = now;
+          LOGF("[WiFi] reconnect kick (down %lus)\n",
+               (unsigned long)((now - wifiDownSince) / 1000));
+          WiFi.begin(ssid.c_str(), pass.c_str());
+        }
+      }
+    }
+  }
+
+  // Cellular handoff — (re)tried on roughly the cadence the blocking version used
+  // (once per fallback window). No-op on non-4G boards; on success the caller
+  // stops invoking us (activeTransport flips to TRANSPORT_CELLULAR).
+  if (now - wifiDownSince >= WIFI_DOWN_FALLBACK_MS &&
+      (wifiLastFallbackTry == 0 || now - wifiLastFallbackTry >= WIFI_DOWN_FALLBACK_MS))
+  {
+    wifiLastFallbackTry = now;
+    LOGLN("[WiFi] still down — trying cellular fallback");
+    tryCellularFallback();
+  }
+}
+
 // A human explicitly asked for the portal — open it right away, regardless of
 // transport state. (1) wifi_cmd: portal, now deliverable over cellular.
 // (2) 3x power-cycle gesture (forcePortalGesture, set in setup()).
@@ -376,6 +462,7 @@ void setup()
   // --- WiFi init ---
   WiFi.persistent(false);
   WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);   // supplicant self-retries between our kicks (see tickWifiReconnect)
   WiFi.mode(WIFI_OFF);
   delay(100);
   WiFi.mode(WIFI_STA);
@@ -509,8 +596,10 @@ void setup()
     }
   }
 
-  // Watchdog: if loop() freezes for >60s, hard-reset the device.
-  // 60s covers worst-case WiFi reconnect (30s) + one blocking HTTP call (6s).
+  // Watchdog: if loop() freezes for >60s, hard-reset the device. The WiFi
+  // down-switch is non-blocking now; the remaining worst case is the cellular
+  // bring-up path (modem power-on + registration) plus one blocking HTTP call,
+  // each already fed with esp_task_wdt_reset().
   esp_task_wdt_init(60, true);
   esp_task_wdt_add(NULL);
 }
@@ -562,48 +651,16 @@ void loop()
   }
 
   // --- Transport state machine: WiFi <-> cellular ---
-  // Down-switch: WiFi is gone and we're still nominally on WiFi. Try a few
-  // quick reconnects, then hand off to cellular (no portal).
-  if (WiFi.status() != WL_CONNECTED && activeTransport == TRANSPORT_WIFI)
+  // Down-switch: WiFi is gone while we're still nominally on WiFi. Non-blocking
+  // (see tickWifiReconnect) — the control plane above keeps its 1s cadence
+  // through the outage; association finishes across later loop iterations, and
+  // cellular fallback is (re)tried once the link has been down long enough.
+  if (activeTransport == TRANSPORT_WIFI)
   {
-    bool reconnected = false;
-
-    if (!portalMode)   // when the portal is up it does its own retry
-    {
-      wifiPrefs.begin("wifi", true);
-      String savedSSID = wifiPrefs.getString("ssid", "");
-      String savedPass = wifiPrefs.getString("pass", "");
-      wifiPrefs.end();
-
-      if (savedSSID.length() > 0)
-      {
-        LOGLN("[WiFi] Connection lost, reconnecting...");
-        for (int attempt = 1; attempt <= 3 && !reconnected; attempt++)
-        {
-          LOGF("[WiFi] Reconnect attempt %d/3...\n", attempt);
-          WiFi.disconnect(false);
-          WiFi.begin(savedSSID.c_str(), savedPass.c_str());
-          unsigned long start = millis();
-          while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
-          {
-            delay(200);
-            esp_task_wdt_reset();   // 3x10s here + stacked failing REST calls
-                                    // earlier this iteration can otherwise cross
-                                    // the 60s task watchdog and reboot mid-switch
-            checkRelayTimers();
-            handleSerialCommands();
-          }
-          reconnected = (WiFi.status() == WL_CONNECTED);
-          if (!reconnected)
-            LOGF("[WiFi] Attempt %d failed\n", attempt);
-        }
-      }
-    }
-
-    if (reconnected)
-      LOGLNS("[WiFi] Reconnected: " + WiFi.localIP().toString());
+    if (WiFi.status() == WL_CONNECTED)
+      clearWifiReconnect();
     else
-      tryCellularFallback();   // brings up cellular if a modem + APN are present
+      tickWifiReconnect(now);
   }
 
   // Background WiFi retry while on cellular with no portal (non-blocking).
