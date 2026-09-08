@@ -587,6 +587,13 @@ void setup()
     if (loadConfigLocal())
     {
       loadSchedulesLocal();
+      // Smart-dosing calibration + rain-reset day live in their own NVS
+      // namespaces, not the persist mirror. bringOnline() loads them but only
+      // after registration — a cold blackout boot never gets there, so load
+      // them here or checkAutoDosing() resumes as if never calibrated and runs
+      // a fresh calibration dose.
+      loadSmartCalibration();
+      loadRainResetState();
       setRunState(RS_OFFLINE_AUTONOMOUS);
       LOGLN("[boot] running autonomously from local config (no cloud reachable)");
     }
@@ -782,6 +789,8 @@ void loop()
     if (loadConfigLocal())
     {
       loadSchedulesLocal();
+      loadSmartCalibration();   // own NVS namespace, not in the persist mirror
+      loadRainResetState();
       LOGLN("[run] local config loaded — control plane active");
     }
   }
