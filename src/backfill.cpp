@@ -8,6 +8,7 @@
 #include "sdcard.h"
 #include "globals.h"
 #include "cellular.h"   // cellularSupabaseRequest()
+#include "cloud.h"      // isoFromEpochUtc()
 #include "logger.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -122,9 +123,15 @@ void backfillTick()
 {
   static unsigned long last = 0;
 
-  if (!shouldTryUplink() || !sdMounted() || doseCritical()) return;
+  // Cheap local gates first. shouldTryUplink() has a side effect — while the
+  // uplink is debounced down it lets exactly one probe through per interval and
+  // arms the timer — so calling it before we know we have something to send
+  // burns that probe and starves the liveness REST calls (updateDeviceStatus /
+  // fetchDeviceConfig) of their only recovery path on an MQTT-blocked site.
+  if (!sdMounted() || doseCritical()) return;
   if (millis() - last < BACKFILL_MIN_INTERVAL_MS) return;
   if (journalPendingBytes() == 0) return;
+  if (!shouldTryUplink()) return;
   last = millis();
 
   size_t off = journalReadOffset();
@@ -132,6 +139,23 @@ void backfillTick()
   size_t     ends[BACKFILL_BATCH];
   size_t     scannedTo = off;
   int n = journalNextBatch(off, recs, ends, BACKFILL_BATCH, &scannedTo);
+
+  // Rows buffered before the clock was valid (first-ever offline boot, failed
+  // modem time-sync) carry no recorded_at; replayed as-is, Supabase stamps them
+  // now() and the whole backlog collapses onto the reconnect instant. Stamp the
+  // capture time from the journal envelope (rec.t) when the row lacks it and the
+  // recorded epoch is plausible.
+  for (int i = 0; i < n; i++)
+  {
+    if (recs[i].t < 1000000000) continue;
+    const String& r = recs[i].row;
+    if (r.length() < 2 || r[0] != '{' || r[1] == '}') continue;
+    if (r.indexOf("\"recorded_at\"") >= 0) continue;
+    String iso = isoFromEpochUtc(recs[i].t);
+    if (iso.length())
+      recs[i].row = "{\"recorded_at\":\"" + iso + "\"," + r.substring(1);
+  }
+
   if (n == 0)
   {
     // Nothing decoded. If the scan got past one or more complete-but-corrupt
