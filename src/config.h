@@ -31,6 +31,18 @@
 #define RELAY1_PIN 15 // DO1 - Dosing Pumps A+B
 #define RELAY2_PIN 16 // DO2 - Mixing Pump
 
+// 4G modem (Quectel EC801E-CN, present only on the ECM50-A09 4G board variant).
+// Detection is lazy — the modem is only powered/probed the first time WiFi
+// fails, so non-4G boards never pay the probe cost. See src/cellular.cpp.
+#define MODEM_PWR_PIN 38 // HIGH = modem powered
+#define MODEM_TX_PIN  39 // ESP32 TX -> modem RXD
+#define MODEM_RX_PIN  40 // ESP32 RX <- modem TXD
+#define MODEM_BAUD    115200
+// While on cellular, if MQTT (plain TCP to the broker) stays unreachable this
+// long, treat the data session as dead even when modem.isGprsConnected() still
+// reports it up (network-side "zombie" teardown) and force a transport rebuild.
+#define CELL_UPLINK_DEAD_MS (3UL * 60UL * 1000UL)
+
 // Sensor Configuration — ID ranges match admin panel SENSOR_TYPES
 #define EC_SENSOR_DEFAULT 3 // Try this ID first before range scan
 #define EC_SCAN_START 3     // EC sensor scan range fallback
@@ -110,7 +122,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.2.5"
+#define FIRMWARE_VERSION "1.2.6"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

@@ -7,6 +7,8 @@
 #include "logger.h"
 #include "mqtt_handler.h"   // publishRelayStatus()
 #include "cloud.h"           // logDeviceActivity()
+#include "cellular.h"        // detectCellularModem() — CELLDETECT diagnostic
+#include "globals.h"         // cellularCapable
 #include <HTTPClient.h>
 
 // =====================================================
@@ -25,9 +27,14 @@ void writeRelay(uint8_t num, bool state)
   const char *label = (num == 1) ? " (Dosing)" : " (Mixing)";
   LOGF("R%d%s -> %s\n", num, label, state ? "ON" : "OFF");
 
+  // Echo the new state to the dashboard over whatever transport is live —
+  // this is how a relay command gets confirmed and the card timer rendered.
+  publishRelayStatus();
+
+  // relay_metrics is an audit-only Supabase write; leave it WiFi-only (matches
+  // the OTA / relay-logging scope — it just doesn't accrue while on cellular).
   if (WiFi.status() == WL_CONNECTED)
   {
-    // Log relay event to Supabase
     HTTPClient http;
     String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
 
@@ -50,8 +57,6 @@ void writeRelay(uint8_t num, bool state)
       http.POST(payload);
       http.end();
     }
-
-    publishRelayStatus();
   }
 }
 
@@ -222,6 +227,7 @@ void handleSerialCommands()
 
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
+  String rawCmd = cmd;   // case preserved — needed for CELLAPN's argument
   cmd.toUpperCase();
   if (cmd.length() == 0)
     return;
@@ -287,6 +293,92 @@ void handleSerialCommands()
         LOGF("[RAINRESET] Write failed (Modbus code 0x%02X)\n", result);
     }
   }
+  else if (cmd == "CELLDETECT")
+  {
+    LOGLN("[Cellular] Probing modem (~11s if not present)...");
+    cellularCapable = detectCellularModem();
+    LOGF("[Cellular] Modem %s\n", cellularCapable ? "detected" : "not present");
+  }
+  else if (cmd == "CELLTEST")
+  {
+    // Bench diagnostic: bring up cellular and prove MQTT + Supabase ride over
+    // it. Not the real fallback path — that's the loop() state machine.
+    if (activeTransport == TRANSPORT_CELLULAR)
+    {
+      LOGLN("[Cellular] Already on cellular fallback — CELLTEST skipped");
+    }
+    else if (!cellularCapable && !(cellularCapable = detectCellularModem()))
+    {
+      LOGLN("[Cellular] No modem detected — CELLTEST aborted");
+    }
+    else if (connectCellularData(cellularApn.length() ? cellularApn.c_str() : "ansar"))
+    {
+      mqttClient.disconnect();
+      mqttClient.setClient(cellularClient);
+      String cid = "SF500_" + lastSix + "_celltest";
+      if (mqttClient.connect(cid.c_str(), MQTT_USER, MQTT_PASS))
+      {
+        LOGLN("[Cellular] MQTT connected over cellular");
+        mqttClient.publish(mqttTopicData.c_str(), "{\"celltest\":true}");
+        LOGLN("[Cellular] Test publish sent");
+      }
+      else
+      {
+        LOGF("[Cellular] MQTT connect failed, state=%d\n", mqttClient.state());
+      }
+
+      // HTTPS-over-cellular: one direct Supabase GET (clear pass/fail signal),
+      // then the same call through fetchDeviceConfig()'s transport branch.
+      LOGLN("[Cellular] Testing Supabase over cellular (software TLS)...");
+      String body;
+      String testUrl = String(SUPABASE_URL) +
+                       "/rest/v1/device_management?device=eq.sf500_" + lastSix +
+                       "&select=device,auto_dosing";
+      int hc = cellularSupabaseRequest("GET", testUrl, "", nullptr, nullptr, body);
+      LOGF("[Cellular] Supabase HTTP %d, body: %s\n", hc, body.substring(0, 120).c_str());
+
+      activeTransport = TRANSPORT_CELLULAR;
+      fetchDeviceConfig();
+      activeTransport = TRANSPORT_WIFI;
+
+      // Restore the WiFi transport — loop() reconnects MQTT over it next tick.
+      mqttClient.disconnect();
+      mqttClient.setClient(espClient);
+    }
+  }
+  else if (cmd == "CELLAPN" || cmd.startsWith("CELLAPN "))
+  {
+    // CELLAPN            -> show current APN
+    // CELLAPN <apn>      -> set + persist to NVS (fallback arms within ~60s)
+    // CELLAPN -          -> clear
+    int sp = rawCmd.indexOf(' ');
+    if (sp < 0)
+    {
+      LOGLNS(cellularApn.length() ? "[Cellular] APN: " + cellularApn
+                                  : String("[Cellular] APN: (none)"));
+    }
+    else
+    {
+      String arg = rawCmd.substring(sp + 1);
+      arg.trim();
+      cellularApn = (arg == "-") ? String("") : arg;
+      wifiPrefs.begin("cellular", false);
+      wifiPrefs.putString("apn", cellularApn);
+      wifiPrefs.end();
+      LOGLNS(cellularApn.length() ? "[Cellular] APN set + saved: " + cellularApn
+                                  : String("[Cellular] APN cleared"));
+    }
+  }
+  else if (cmd == "CELLKILL")
+  {
+    LOGLN("[Cellular] Simulating link loss (modem radio OFF)");
+    setModemRadio(false);
+  }
+  else if (cmd == "CELLOK")
+  {
+    LOGLN("[Cellular] Restoring modem radio");
+    setModemRadio(true);
+  }
   else if (cmd == "HELP")
   {
     LOGLN("\n--- Commands ---");
@@ -296,6 +388,10 @@ void handleSerialCommands()
     LOGLN("PLUGON/PLUGOFF - Relay 3 (Tasmota Plug)");
     LOGLN("WIFIINFO     - WiFi status");
     LOGLN("RAINRESET    - Try resetting rain counter (test)");
+    LOGLN("CELLDETECT   - Probe for the onboard 4G modem (test)");
+    LOGLN("CELLTEST     - Bring up 4G + MQTT-over-cellular (test)");
+    LOGLN("CELLAPN [x]  - Show/set/clear the persisted cellular APN");
+    LOGLN("CELLKILL/CELLOK - Sim link loss on/off (modem radio, test)");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }
