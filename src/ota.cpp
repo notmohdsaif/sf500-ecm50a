@@ -10,6 +10,35 @@
 #include "cloud.h"
 #include "logger.h"
 
+// Parse the first 3 dot-separated integers of a version string into out[3].
+// Missing / non-numeric components read as 0. "1.2.6" -> {1,2,6}, "v1.3" -> {1,3,0}.
+static void otaParseVer(const char *s, int out[3])
+{
+  out[0] = out[1] = out[2] = 0;
+  if (*s == 'v' || *s == 'V') s++;
+  for (int i = 0; i < 3 && *s; i++)
+  {
+    int n = 0;
+    while (*s >= '0' && *s <= '9') n = n * 10 + (*s++ - '0');
+    out[i] = n;
+    if (*s == '.') s++;
+    else break;
+  }
+}
+
+// True if version `a` is strictly newer than `b`. Guards against a device on an
+// unreleased / pre-release build (or a botched releases/latest pointer) flashing
+// itself *backwards* to an older tag.
+static bool otaIsNewer(const char *a, const char *b)
+{
+  int va[3], vb[3];
+  otaParseVer(a, va);
+  otaParseVer(b, vb);
+  for (int i = 0; i < 3; i++)
+    if (va[i] != vb[i]) return va[i] > vb[i];
+  return false;
+}
+
 // =====================================================
 // MARK APP VALID
 // Call once after successful boot to cancel rollback.
@@ -80,9 +109,9 @@ void checkForOTAUpdate()
 
   LOGLNS("[OTA] Latest: v" + latestTag);
 
-  if (latestTag == FIRMWARE_VERSION)
+  if (!otaIsNewer(latestTag.c_str(), FIRMWARE_VERSION))
   {
-    LOGLN("[OTA] Up to date");
+    LOGLNS("[OTA] Up to date (latest v" + latestTag + " not newer than v" FIRMWARE_VERSION ")");
     return;
   }
 
