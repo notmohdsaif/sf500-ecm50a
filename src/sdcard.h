@@ -67,6 +67,10 @@ bool     sdReadRange(const char* path, size_t offset, size_t maxLen, String& out
 // file + rename (power-loss safe, bounded RAM). Used for journal compaction.
 bool     sdStreamDropPrefix(const char* path, size_t dropBytes);
 
+// Reconcile a crash-safe file swap (sdStreamDropPrefix / sdRewriteCommit) that
+// a power cut interrupted mid-rename. Call once at boot after the card mounts.
+void     sdFinishInterruptedSwap(const char* path);
+
 // Stateful streamed rewrite of a file: sdRewriteBegin(path) opens <path>.tmp,
 // sdRewriteAppend() writes into it, sdRewriteCommit() fsyncs + renames it over
 // <path>, sdRewriteAbort() discards it. One open/close for the whole rewrite,

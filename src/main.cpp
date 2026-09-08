@@ -444,8 +444,11 @@ void setup()
 
   // --- microSD (offline buffering + config persistence) ---
   if (sdInit())
+  {
     LOGF("[SD] card present (CD=%d), free %llu MB\n",
          sdCardDetect(), sdFreeBytes() / (1024ULL * 1024ULL));
+    journalBootRecover();   // finish any compaction swap a power cut interrupted
+  }
   else
     LOGLN("[SD] unavailable — offline buffering + schedule persistence disabled");
 

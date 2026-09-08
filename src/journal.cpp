@@ -85,13 +85,19 @@ String journalDropPrefix(const String& all, size_t offset)
   return out;
 }
 
-// A journalled line is a sensor_metrics row if its `tbl` field is
-// "sensor_metrics". Substring match on the raw line — the sensor row body never
-// contains that string, so this agrees with journalDecode's classification.
+// A journalled line is a sensor_metrics row if its envelope `tbl` field is
+// "sensor_metrics". Match the anchored key `"tbl":"sensor_metrics"` (journalEncode
+// emits it verbatim, no spaces) rather than a bare "sensor_metrics" scan — an
+// activity_log row carries free-text in row.action and could otherwise be
+// misclassified as a sensor row and evicted by retention (audit rows are
+// always-keep). Cheap substring, not a full parse: this runs over every line in
+// the streaming retention scan.
 bool journalLineIsSensorMetrics(const char* p, size_t len)
 {
-  for (size_t k = 0; k + 14 <= len; k++)
-    if (memcmp(p + k, "sensor_metrics", 14) == 0) return true;
+  static const char kKey[] = "\"tbl\":\"sensor_metrics\"";
+  const size_t klen = sizeof(kKey) - 1;
+  for (size_t k = 0; k + klen <= len; k++)
+    if (memcmp(p + k, kKey, klen) == 0) return true;
   return false;
 }
 
@@ -177,6 +183,23 @@ size_t journalPendingBytes()
   size_t sz  = sdFileSize(JOURNAL_PATH);
   size_t off = journalReadOffset();
   return sz > off ? sz - off : 0;
+}
+
+void journalBootRecover()
+{
+  if (!sdMounted()) return;
+
+  // Finish a compaction/retention swap a power cut interrupted mid-rename.
+  sdFinishInterruptedSwap(JOURNAL_PATH);
+
+  // A crash between sdStreamDropPrefix() succeeding and journalWriteOffset(0)
+  // leaves the committed offset pointing past the now-shorter file, so
+  // journalPendingBytes() reads 0 and nothing ever drains again. Snap it back.
+  if (journalReadOffset() > sdFileSize(JOURNAL_PATH))
+  {
+    journalWriteOffset(0);
+    LOGLN("[journal] boot: offset was past EOF — reset to 0");
+  }
 }
 
 int journalNextBatch(size_t fromOffset, JournalRec* recs, size_t* ends,

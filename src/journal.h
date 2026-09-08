@@ -59,6 +59,10 @@ size_t journalReadOffset();
 void   journalWriteOffset(size_t off);
 size_t journalPendingBytes();                                 // fileSize - offset
 
+// Call once at boot after the SD mounts: completes a compaction/retention file
+// swap interrupted by a power cut, and corrects an offset left past EOF.
+void   journalBootRecover();
+
 // Decode up to maxRecs complete lines from `fromOffset`. ends[i] = byte offset
 // just past line i (what the caller commits after a successful POST). A torn
 // trailing line is ignored. Returns the count decoded. When `scannedTo` is

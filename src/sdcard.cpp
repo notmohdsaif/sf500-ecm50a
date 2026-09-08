@@ -272,6 +272,49 @@ bool sdReadRange(const char* path, size_t offset, size_t maxLen, String& out)
   return true;
 }
 
+// Swap `tmp` in for `path` as crash-safely as FAT allows. FAT rename can't
+// overwrite, so the naive remove(path)+rename(tmp,path) leaves a window where a
+// power cut loses `path` entirely with no recoverable copy — fatal for the
+// journal, which (unlike config) has no NVS backstop. Keep the old file as
+// `<path>.bak` until the new one is in place; sdFinishInterruptedSwap()
+// completes a swap the power cut interrupted, on the next boot.
+static bool sdSwapInPlace(const char* path, const char* tmp)
+{
+  String bak = String(path) + ".bak";
+  sd.remove(bak.c_str());                        // clear any stale backup
+  if (sd.exists(path) && !sd.rename(path, bak.c_str()))
+  {
+    sd.remove(tmp);
+    return false;
+  }
+  if (!sd.rename(tmp, path))
+  {
+    if (sd.exists(bak.c_str())) sd.rename(bak.c_str(), path);   // put the original back
+    return false;
+  }
+  sd.remove(bak.c_str());
+  return true;
+}
+
+// Called once at boot (via journalBootRecover): reconcile a swap that a power
+// cut interrupted mid-rename. Missing `path` + present `<path>.bak` => restore
+// the backup. Present `path` => drop any stale `.bak` / `.tmp` leftovers.
+void sdFinishInterruptedSwap(const char* path)
+{
+  if (!mounted) return;
+  String bak = String(path) + ".bak";
+  String tmp = String(path) + ".tmp";
+  if (!sd.exists(path))
+  {
+    if (sd.exists(bak.c_str())) sd.rename(bak.c_str(), path);
+  }
+  else
+  {
+    sd.remove(bak.c_str());
+    sd.remove(tmp.c_str());
+  }
+}
+
 bool sdStreamDropPrefix(const char* path, size_t dropBytes)
 {
   if (!mounted) return false;
@@ -289,16 +332,22 @@ bool sdStreamDropPrefix(const char* path, size_t dropBytes)
   uint8_t buf[512];
   bool ok = true;
   int n;
+  size_t sinceFeed = 0;
   while ((n = in.read(buf, sizeof(buf))) > 0)
+  {
     if (out.write(buf, n) != (size_t)n) { ok = false; break; }
+    // The un-drained tail can be MB after a long outage; feed the 60s task
+    // watchdog so a slow card can't reboot us mid-compaction (the siblings in
+    // journal.cpp do the same in their windowed loops).
+    if ((sinceFeed += n) >= 65536) { esp_task_wdt_reset(); sinceFeed = 0; }
+  }
 
   out.sync();
   out.close();
   in.close();
   if (!ok) { sd.remove(tmp.c_str()); return false; }
 
-  sd.remove(path);
-  return sd.rename(tmp.c_str(), path);
+  return sdSwapInPlace(path, tmp.c_str());
 }
 
 // --- Stateful streamed rewrite: one open, many appends, one atomic commit. ---
@@ -332,8 +381,7 @@ bool sdRewriteCommit()
   rwOut.close();
   rwOpen = false;
   String tmp = rwFinal + ".tmp";
-  sd.remove(rwFinal.c_str());                 // rename() will not overwrite
-  return sd.rename(tmp.c_str(), rwFinal.c_str());
+  return sdSwapInPlace(rwFinal.c_str(), tmp.c_str());
 }
 
 void sdRewriteAbort()

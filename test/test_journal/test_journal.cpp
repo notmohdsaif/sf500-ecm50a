@@ -98,6 +98,13 @@ void test_line_classifier_sensor_vs_audit() {
   TEST_ASSERT_FALSE(journalLineIsSensorMetrics(r.c_str(), r.length()));
   TEST_ASSERT_FALSE(journalLineIsSensorMetrics("", 0));
   TEST_ASSERT_FALSE(journalLineIsSensorMetrics("sensor_metri", 12));   // truncated, no match
+
+  // An activity_log row whose free-text body mentions the string
+  // "sensor_metrics" must NOT be classified as a sensor row — it is always-keep
+  // audit data and must survive retention trimming.
+  String a2 = "{\"t\":4,\"approx\":0,\"tbl\":\"activity_log\","
+              "\"row\":{\"action\":\"POST to sensor_metrics failed (401)\"}}\n";
+  TEST_ASSERT_FALSE(journalLineIsSensorMetrics(a2.c_str(), a2.length()));
 }
 
 int main(int, char**) {
