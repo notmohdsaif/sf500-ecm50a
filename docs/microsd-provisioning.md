@@ -107,13 +107,19 @@ After the unit boots and comes online, a row appears in `activity_log` for the
 device:
 
 ```
-boot summary: sd=ok/15185MB cfg=loaded ecTarget=1.50 ... clock=ntp
+boot summary: sd=ok/7480MB cfg=loaded ecTarget=1.50 autoDosing=1 mixing=1 dosingTime=30 schedules=2 journalPendingB=0 clock=ntp
 ```
 
 - `sd=ok/<N>MB` means the card mounted and has N MB free. Done.
 - `sd=absent` means no card was detected.
 - `sd=unreadable` means a card is present but did not mount. Almost always this
   is a card that was not formatted as FAT32, or a bad card. Re-run section 2.
+- `cfg=loaded` means the unit found its saved configuration on the card and can
+  keep dosing autonomously even if it boots with no connectivity. `cfg=none` is
+  normal only on a unit's first boots, before it has been online once to fetch
+  and save its config; after that it should read `cfg=loaded` on every boot.
+- `journalPendingB=<N>` is the buffered-but-unsent byte count (same value as
+  `pending_b` in section 4b). It is 0 or small on a healthy online unit.
 
 ### 4b. MQTT (live, no reboot needed)
 
@@ -127,7 +133,7 @@ mosquitto_sub -h broker.emqx.io -p 1883 -t 'sf500/107888/data' -C 1
 The payload contains an `sd` block:
 
 ```json
-"sd": { "state": "ok", "free_mb": 15185, "pending_b": 0 }
+"sd": { "state": "ok", "free_mb": 7480, "pending_b": 0 }
 ```
 
 - `state` is `ok`, `absent`, or `unreadable`, as above.
