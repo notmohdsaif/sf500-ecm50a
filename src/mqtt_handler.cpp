@@ -297,7 +297,7 @@ void publishRelayStatus(const char* r3Reason)
 
   char buf[384];
   serializeJson(doc, buf);
-  mqttClient.publish(topicRelayStatus.c_str(), buf, true);
+  mqttClient.publish(topicRelayStatus.c_str(), buf);
 }
 
 // =====================================================
