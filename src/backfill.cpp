@@ -8,7 +8,7 @@
 #include "sdcard.h"
 #include "globals.h"
 #include "cellular.h"   // cellularSupabaseRequest()
-#include "cloud.h"      // isoFromEpochUtc()
+#include "cloud.h"      // isoFromEpoch()
 #include "logger.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -151,7 +151,7 @@ void backfillTick()
     const String& r = recs[i].row;
     if (r.length() < 2 || r[0] != '{' || r[1] == '}') continue;
     if (r.indexOf("\"recorded_at\"") >= 0) continue;
-    String iso = isoFromEpochUtc(recs[i].t);
+    String iso = isoFromEpoch(recs[i].t);
     if (iso.length())
       recs[i].row = "{\"recorded_at\":\"" + iso + "\"," + r.substring(1);
   }

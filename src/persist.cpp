@@ -319,6 +319,15 @@ bool seedClockFromStore()
   tv.tv_sec  = (time_t)e;
   tv.tv_usec = 0;
   settimeofday(&tv, nullptr);
+
+  // settimeofday() alone doesn't set TZ — same fix as cellular.cpp's NITZ path
+  // (see its comment). Without this, localtime_r() renders unshifted UTC
+  // digits on a cold offline boot (no NTP/modem sync yet this session) while
+  // isoNow()/isoFromEpoch() still stamp them "+08:00" — an 8h-off recorded_at,
+  // reproducing the D2 bug through this path instead of the one it fixed.
+  setenv("TZ", "UTC-8", 1);
+  tzset();
+
   storedEpochAtBoot = (time_t)e;
   approxClock = true;
   LOGF("[clock] seeded from store: %u (approx)\n", (unsigned)e);

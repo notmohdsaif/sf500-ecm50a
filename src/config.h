@@ -24,6 +24,8 @@
 #define WIFI_RECONNECT_KICK_MS   20000UL   // re-issue WiFi.begin() this often while the link is down
 #define WIFI_RECONNECT_CYCLE_MS  120000UL  // full radio power-cycle this often while down (recovers a wedged supplicant after the AP vanished and returned)
 #define WIFI_DOWN_FALLBACK_MS    30000UL   // link down this long -> (re)try cellular fallback (no-op on non-4G boards; matches the old blocking loop's ~30s to first fallback)
+#define WIFI_PORTAL_LAST_RESORT_MS 180000UL  // genuinely-offline (has creds, no cellular) portal is a last resort, gated behind this much downtime so it doesn't preempt tickWifiReconnect() (see shouldOpenPortalOffline() — D1 fix, was ~1s -> measured 300s reconnect)
+#define WIFI_RECONNECT_STABLE_MS 15000UL     // require this long of continuous WL_CONNECTED before declaring the outage over — a flapping AP that briefly re-associates would otherwise reset the whole ladder (wifiDownSince/wifiLastCycle) every blip, starving the last-resort portal gate above of the sustained downtime it needs to ever fire. Matches the existing 15s cellular up-switch debounce (wifiUpSince) below.
 
 // Supabase
 #define SUPABASE_URL "https://qkqeysggrqhxizkdmbhx.supabase.co"

@@ -171,6 +171,8 @@ size_t getArduinoLoopTaskStackSize(void) {
   return 20480;
 }
 
+static void clearWifiReconnect();   // forward decl — defined with the rest of the WiFi ladder state below
+
 // Cellular fallback trigger. Called from loop()'s transport state machine when
 // WiFi is unreachable — whether saved creds failed to connect or there are none
 // at all (fresh unit / after a wifi_cmd forget). Lazily probes the modem once
@@ -205,6 +207,13 @@ static void tryCellularFallback()
   if (connectCellularData(cellularApn.c_str()))
   {
     activeTransport = TRANSPORT_CELLULAR;
+    // This WiFi outage is resolved (via a different transport) — tickWifiReconnect()
+    // won't run again until we're back on WIFI, so its ladder state would otherwise
+    // sit frozen for the whole cellular interlude. Left uncleared, a later WiFi drop
+    // (cellular dies, falls back to WiFi) resumes against that stale wifiDownSince and
+    // can satisfy shouldOpenPortalOffline()'s last-resort gate on the very first tick —
+    // reopening the D1 bug through a WiFi<->cellular bounce instead of a plain outage.
+    clearWifiReconnect();
     mqttClient.disconnect();
     mqttClient.setClient(cellularClient);
     LOGLN("[Cellular] Fallback active");
@@ -248,12 +257,18 @@ static unsigned long wifiDownSince       = 0;
 static unsigned long wifiLastKick        = 0;
 static unsigned long wifiLastCycle       = 0;
 static unsigned long wifiLastFallbackTry = 0;
+// Whether >=1 full radio power-cycle has fired since the link went down — gates
+// the offline portal, see shouldOpenPortalOffline(). Not its own flag: a cycle
+// always sets wifiLastCycle to a fresh `now`, while the down-detection init
+// below seeds it equal to wifiDownSince — so "have they diverged" is exactly
+// "did a cycle happen", with no separate state to keep in sync.
+static inline bool wifiHadCycle() { return wifiLastCycle != wifiDownSince; }
 
-// Link is good again — reset the ladder.
+// Link is good again — reset the ladder. Caller logs the transition (or not);
+// this is also called from a successful cellular handoff, which isn't one.
 static void clearWifiReconnect()
 {
   if (wifiDownSince == 0) return;
-  LOGLNS("[WiFi] Re-associated: " + WiFi.localIP().toString());
   wifiDownSince = wifiLastKick = wifiLastCycle = wifiLastFallbackTry = 0;
 }
 
@@ -350,19 +365,32 @@ static bool portalRequestedByHuman()
 // that must be provisioned, or one that's genuinely offline (WiFi down AND
 // cellular didn't take). Checked only AFTER the transport state machine has
 // had its shot at cellular.
-static bool shouldOpenPortalOffline()
+static bool shouldOpenPortalOffline(unsigned long now)
 {
   bool haveCell = (activeTransport == TRANSPORT_CELLULAR);
   bool wifiDown = (WiFi.status() != WL_CONNECTED);
+
+  // Neither branch below can return true once cellular is carrying traffic or
+  // WiFi is actually up — short-circuit before the NVS read (Preferences),
+  // which this function would otherwise pay on every loop (~100/s) for as
+  // long as the portal is closed, the overwhelming majority of the time.
+  if (haveCell || !wifiDown) return false;
 
   wifiPrefs.begin("wifi", true);
   bool haveCreds = wifiPrefs.getString("ssid", "").length() > 0;
   wifiPrefs.end();
 
-  if (!haveCreds && !haveCell) return true; // must be provisioned on-site
-  if (wifiDown && !haveCell)   return true; // genuinely offline
+  if (!haveCreds) return true; // must be provisioned on-site
 
-  return false;
+  // Genuinely offline with saved creds: this used to return true almost
+  // immediately (~1s into the outage), which opens the AP and tears STA mode
+  // down — defeating tickWifiReconnect()'s non-blocking ladder and falling
+  // back to the portal's 5-min saved-cred retry (measured 300s to reconnect,
+  // D1 bug). Now a true last resort: only once WiFi has been down long enough
+  // that a full radio power-cycle has already been tried and failed.
+  return wifiDownSince != 0 &&
+         now - wifiDownSince >= WIFI_PORTAL_LAST_RESORT_MS &&
+         wifiHadCycle();
 }
 
 // One-time "we have an uplink" initialisation — registration, time, sensors,
@@ -665,12 +693,27 @@ void loop()
   // (see tickWifiReconnect) — the control plane above keeps its 1s cadence
   // through the outage; association finishes across later loop iterations, and
   // cellular fallback is (re)tried once the link has been down long enough.
+  static unsigned long wifiReconnectStableSince = 0;
   if (activeTransport == TRANSPORT_WIFI)
   {
     if (WiFi.status() == WL_CONNECTED)
-      clearWifiReconnect();
+    {
+      // Debounced: a flapping AP that briefly re-associates would otherwise
+      // reset wifiDownSince/wifiLastCycle on every blip, perpetually
+      // restarting the ladder and starving shouldOpenPortalOffline()'s
+      // last-resort gate of the sustained downtime it needs to ever fire.
+      if (wifiReconnectStableSince == 0) wifiReconnectStableSince = now;
+      if (wifiDownSince != 0 && now - wifiReconnectStableSince >= WIFI_RECONNECT_STABLE_MS)
+      {
+        LOGLNS("[WiFi] Re-associated: " + WiFi.localIP().toString());
+        clearWifiReconnect();
+      }
+    }
     else
+    {
+      wifiReconnectStableSince = 0;
       tickWifiReconnect(now);
+    }
   }
 
   // Background WiFi retry while on cellular with no portal (non-blocking).
@@ -766,7 +809,7 @@ void loop()
   }
 
   // --- Open the AP if there's no other way to be useful (cellular already tried) ---
-  if (!portalMode && shouldOpenPortalOffline())
+  if (!portalMode && shouldOpenPortalOffline(now))
   {
     portalAutoOpened = true;
     startWiFiPortal();
@@ -841,6 +884,27 @@ void loop()
     {
       persistClock();
       lastClockPersist = now;
+    }
+  }
+
+  // --- loopTask stack + heap high-water (Phase 5: the v1.2.5 crash class —
+  //     SdFat + ArduinoJson + mbedTLS all run on this task). Tracks the lowest
+  //     free stack seen so far; logs only when it drops or every 60s. Must run
+  //     before the offline early-return below — a full WiFi+cellular outage is
+  //     exactly the condition this is meant to catch (D3 fix: used to sit after
+  //     the return and go silent for the whole outage). ---
+  {
+    static unsigned long lastStackLog = 0;
+    static uint32_t stackMinEver = 0xFFFFFFFF;
+    uint32_t freeStack = (uint32_t)uxTaskGetStackHighWaterMark(NULL); // bytes (ESP-IDF)
+    bool dropped = freeStack < stackMinEver;
+    if (dropped) stackMinEver = freeStack;
+    if (dropped || now - lastStackLog >= 60000UL)
+    {
+      LOGF("[stack] loopTask free now %lu B, min-ever %lu B (of ~20480) | heap %lu B\n",
+           (unsigned long)freeStack, (unsigned long)stackMinEver,
+           (unsigned long)ESP.getFreeHeap());
+      lastStackLog = now;
     }
   }
 
@@ -978,24 +1042,6 @@ void loop()
     lastLogPublish = now;
   }
 #endif
-
-  // --- loopTask stack + heap high-water (Phase 5: the v1.2.5 crash class —
-  //     SdFat + ArduinoJson + mbedTLS all run on this task). Tracks the lowest
-  //     free stack seen so far; logs only when it drops or every 60s. ---
-  {
-    static unsigned long lastStackLog = 0;
-    static uint32_t stackMinEver = 0xFFFFFFFF;
-    uint32_t freeStack = (uint32_t)uxTaskGetStackHighWaterMark(NULL); // bytes (ESP-IDF)
-    bool dropped = freeStack < stackMinEver;
-    if (dropped) stackMinEver = freeStack;
-    if (dropped || now - lastStackLog >= 60000UL)
-    {
-      LOGF("[stack] loopTask free now %lu B, min-ever %lu B (of ~20480) | heap %lu B\n",
-           (unsigned long)freeStack, (unsigned long)stackMinEver,
-           (unsigned long)ESP.getFreeHeap());
-      lastStackLog = now;
-    }
-  }
 
   delay(10);
 }

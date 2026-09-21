@@ -18,29 +18,26 @@
 // reconnect instant. Empty string until the clock is valid.
 String isoNow()
 {
-  time_t t = time(nullptr);
+  return isoFromEpoch(time(nullptr));
+}
+
+// Same wall-clock rendering as isoNow(), but from an arbitrary epoch — used by
+// backfill to stamp recorded_at on a journalled row that was buffered before
+// the clock was valid (so isoNow() returned "" at append time). time(nullptr)
+// is the true UTC epoch — NTP's configTime(8*3600,…) and the cellular NITZ
+// path both set TZ=UTC-8 (POSIX sign inverted) so localtime_r() renders it as
+// local +08:00 wall clock; that's what the hardcoded "+08:00" suffix assumes.
+// Must use localtime_r, not gmtime_r (gmtime_r ignores TZ and produced a
+// timestamp 8h behind the real capture time — D2 bug, "00:43Z" logged for a
+// real 08:43). This still depends on TZ having been set by the time this
+// runs — see persist.cpp's seedClockFromStore(), which now sets it too.
+String isoFromEpoch(time_t t)
+{
   if (t < 1000000000) return String();
   struct tm ti;
   localtime_r(&t, &ti);
   char b[30];
   sprintf(b, "%04d-%02d-%02dT%02d:%02d:%02d+08:00",
-          ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
-          ti.tm_hour, ti.tm_min, ti.tm_sec);
-  return String(b);
-}
-
-// UTC form from an arbitrary epoch — used by backfill to stamp recorded_at on a
-// journalled row that was buffered before the clock was valid (so isoNow()
-// returned "" at append time). gmtime_r, not localtime_r: a clock-less offline
-// boot may not have the TZ set yet, and Postgres parses "...Z" to the same
-// instant as the "+08:00" rows isoNow() writes.
-String isoFromEpochUtc(time_t t)
-{
-  if (t < 1000000000) return String();
-  struct tm ti;
-  gmtime_r(&t, &ti);
-  char b[24];
-  sprintf(b, "%04d-%02d-%02dT%02d:%02d:%02dZ",
           ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
           ti.tm_hour, ti.tm_min, ti.tm_sec);
   return String(b);
