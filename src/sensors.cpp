@@ -8,6 +8,8 @@
 #include "relay.h"    // writeRelay() used in checkAutoDosing
 #include "cloud.h"    // logDeviceActivity()
 #include "cellular.h" // modem.getSignalQuality() for the data payload's cellular block
+#include "sdcard.h"   // sdHealth() / sdFreeBytesCached() for the data payload's sd block
+#include "journal.h"  // journalPendingBytes()
 
 // =====================================================
 // SENSOR INITIALISATION
@@ -361,7 +363,7 @@ void readSensors()
   // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
   if (mqttClient.connected())
   {
-    StaticJsonDocument<1536> doc;
+    StaticJsonDocument<1792> doc;   // +256 for the "sd" block
 
     if (success)
     {
@@ -462,6 +464,23 @@ void readSensors()
 
     doc["fw"] = FIRMWARE_VERSION;
 
+    // microSD state — lets the fleet be checked from Supabase/MQTT after a card
+    // is plugged in, with no serial console. "ok" once, plus free space and the
+    // unsent-buffer size; otherwise "absent" / "unreadable" (see sdHealth()).
+    {
+      JsonObject sdObj = doc.createNestedObject("sd");
+      switch (sdHealth())
+      {
+        case SD_HEALTH_OK:
+          sdObj["state"]     = "ok";
+          sdObj["free_mb"]   = (uint32_t)(sdFreeBytesCached() / (1024ULL * 1024ULL));
+          sdObj["pending_b"] = (uint32_t)journalPendingBytes();
+          break;
+        case SD_HEALTH_UNREADABLE: sdObj["state"] = "unreadable"; break;
+        default:                   sdObj["state"] = "absent";     break;
+      }
+    }
+
     JsonObject sensorsObj = doc.createNestedObject("sensors");
     sensorsObj["ec"]   = ecSensorFound;
     sensorsObj["wl"]   = wlSensorFound;
@@ -470,7 +489,7 @@ void readSensors()
 
     doc["rescan_seq"] = rescanSeq;
 
-    char buf[1536];
+    char buf[1792];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }

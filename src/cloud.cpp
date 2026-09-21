@@ -8,7 +8,40 @@
 #include "relay.h"
 #include "mqtt_handler.h"
 #include "cellular.h"   // cellularSupabaseRequest() — cellular-fallback transport
+#include "persist.h"    // persistConfig() / persistSchedules() — local mirror for offline cold-start
+#include "journal.h"    // journalAppend() — SD telemetry buffering
+#include "sdcard.h"     // sdMounted()
 #include <HTTPClient.h>
+
+// ISO-8601 (+08:00) timestamp for `recorded_at` — the real capture time, so a
+// row replayed from the SD journal after a long outage doesn't collapse to the
+// reconnect instant. Empty string until the clock is valid.
+String isoNow()
+{
+  return isoFromEpoch(time(nullptr));
+}
+
+// Same wall-clock rendering as isoNow(), but from an arbitrary epoch — used by
+// backfill to stamp recorded_at on a journalled row that was buffered before
+// the clock was valid (so isoNow() returned "" at append time). time(nullptr)
+// is the true UTC epoch — NTP's configTime(8*3600,…) and the cellular NITZ
+// path both set TZ=UTC-8 (POSIX sign inverted) so localtime_r() renders it as
+// local +08:00 wall clock; that's what the hardcoded "+08:00" suffix assumes.
+// Must use localtime_r, not gmtime_r (gmtime_r ignores TZ and produced a
+// timestamp 8h behind the real capture time — D2 bug, "00:43Z" logged for a
+// real 08:43). This still depends on TZ having been set by the time this
+// runs — see persist.cpp's seedClockFromStore(), which now sets it too.
+String isoFromEpoch(time_t t)
+{
+  if (t < 1000000000) return String();
+  struct tm ti;
+  localtime_r(&t, &ti);
+  char b[30];
+  sprintf(b, "%04d-%02d-%02dT%02d:%02d:%02d+08:00",
+          ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+          ti.tm_hour, ti.tm_min, ti.tm_sec);
+  return String(b);
+}
 
 // =====================================================
 // NTP TIME SYNC
@@ -37,6 +70,7 @@ void syncTimeWithNTP()
         LOGF("NTP OK: %04d-%02d-%02d %02d:%02d:%02d\n",
              ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
              ti.tm_hour, ti.tm_min, ti.tm_sec);
+        noteNtpSynced();   // real time now — clear the coarse-clock approx flag
         return;
       }
       delay(500);
@@ -52,6 +86,7 @@ void syncTimeWithNTP()
 
 void registerDevice()
 {
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
   int    code;
@@ -75,6 +110,7 @@ void registerDevice()
     http.end();
   }
   LOGF("[REG] HTTP code: %d\n", code);
+  noteUplinkResult(code == 200);
 
   if (code == 200)
   {
@@ -139,6 +175,7 @@ void uploadSensorConfig()
 {
   if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
     return;
+  if (!shouldTryUplink()) return;
 
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
@@ -203,6 +240,7 @@ void uploadSensorConfig()
     http.end();
   }
 
+  noteUplinkResult(code == 200 || code == 204);
   LOGLN(code == 200 || code == 204 ? "Sensor config uploaded" : "Config upload failed");
 }
 
@@ -214,10 +252,13 @@ void uploadSensorReadings()
 {
   if (!sensors.hasData)
     return;
+  // NB: no haveUplink() gate here — when an SD card is present this journals
+  // the readings offline for later backfill. The no-card path checks haveUplink
+  // itself before its direct POST.
 
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
-  DynamicJsonDocument doc(768);
+  DynamicJsonDocument doc(1792);   // fits a full sensor set + a recorded_at per row
   if (doc.capacity() == 0) { LOGLN("[UPLOAD] JSON alloc failed (low heap)"); return; }
   JsonArray arr = doc.to<JsonArray>();
 
@@ -283,6 +324,29 @@ void uploadSensorReadings()
     rn["value"]     = serialized(String(sensors.rainfall, 1));
   }
 
+  String rec = isoNow();
+  if (rec.length())
+    for (JsonObject row : arr)
+      row["recorded_at"] = rec;
+
+  // Buffer-then-drain: one journal line per row while an SD card is present.
+  if (sdMounted())
+  {
+    bool allBuffered = true;
+    for (JsonObject row : arr)
+    {
+      String rj;
+      serializeJson(row, rj);
+      if (!journalAppend("sensor_metrics", rj)) { allBuffered = false; break; }
+    }
+    if (allBuffered) return;
+    // An SD write failed mid-batch — fall through to a live POST of the whole
+    // array. Rows already journalled will also drain via backfill (a rare
+    // duplicate, preferable to losing the batch).
+  }
+
+  if (!shouldTryUplink()) return;   // no card / journal write failed, and no uplink — drop
+
   String payload;
   serializeJson(arr, payload);
 
@@ -306,6 +370,7 @@ void uploadSensorReadings()
     http.end();
   }
 
+  noteUplinkResult(code == 200 || code == 201);
   if (code == 200 || code == 201)
     LOGF("Uploaded %u readings\n", (unsigned)arr.size());
 }
@@ -316,6 +381,7 @@ void uploadSensorReadings()
 
 void updateDeviceStatus(const char *status)
 {
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
   StaticJsonDocument<128> doc;
@@ -339,7 +405,8 @@ void updateDeviceStatus(const char *status)
   if (activeTransport == TRANSPORT_CELLULAR)
   {
     String resp;
-    cellularSupabaseRequest("PATCH", url, payload, "application/json", nullptr, resp);
+    int code = cellularSupabaseRequest("PATCH", url, payload, "application/json", nullptr, resp);
+    noteUplinkResult(code >= 200 && code < 300);
     return;
   }
 
@@ -350,7 +417,9 @@ void updateDeviceStatus(const char *status)
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.setTimeout(6000);   // runs every 30s in loop() — keep well under MQTT keepalive
-  http.PATCH(payload);
+  int code = http.PATCH(payload);
+  noteUplinkResult(code >= 200 && code < 300);
+  if (!(code >= 200 && code < 300)) LOGF("[status] update failed: %d\n", code);
   http.end();
 }
 
@@ -361,6 +430,7 @@ void updateDeviceStatus(const char *status)
 static void fetchRefillTankMax()
 {
   if (!wlSensorFound) return;
+  if (!shouldTryUplink()) return;
 
   char sensorId[8];
   sprintf(sensorId, "wl_%02d", wlSensorId);
@@ -388,6 +458,7 @@ static void fetchRefillTankMax()
       response = http.getString();
     http.end();
   }
+  noteUplinkResult(code == 200);
   if (code != 200) return;
 
   StaticJsonDocument<128> doc;
@@ -397,8 +468,13 @@ static void fetchRefillTankMax()
   if (!doc[0]["max_thres"].isNull())
   {
     float tankMax = doc[0]["max_thres"];
-    refillCutoffMm = tankMax * REFILL_CUTOFF_PCT;
-    LOGF("[CONFIG] Refill cutoff: %.0fmm (%.0f%% of %.0fmm tank)\n", refillCutoffMm, REFILL_CUTOFF_PCT * 100, tankMax);
+    float newCutoff = tankMax * REFILL_CUTOFF_PCT;
+    if (fabs(newCutoff - refillCutoffMm) > 0.5f)
+    {
+      refillCutoffMm = newCutoff;
+      LOGF("[CONFIG] Refill cutoff: %.0fmm (%.0f%% of %.0fmm tank)\n", refillCutoffMm, REFILL_CUTOFF_PCT * 100, tankMax);
+      persistConfig();
+    }
   }
 }
 
@@ -408,6 +484,7 @@ static void fetchRefillTankMax()
 
 void fetchDeviceConfig()
 {
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) +
                "/rest/v1/device_management?device=eq." + deviceName +
                "&select=auto_dosing,ec_target,mixing_pump,dosing_time,smart_dosing,min_wl_dosing,tasmota_plug_topic,tasmota_plug_enabled,tasmota_plug_mode,tasmota_plug_host,cellular_apn";
@@ -431,7 +508,8 @@ void fetchDeviceConfig()
       response = http.getString();
     http.end();
   }
-  if (code != 200) return;
+  noteUplinkResult(code == 200);
+  if (code != 200) { LOGF("[cfg] fetch failed: %d\n", code); return; }
 
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, response) != DeserializationError::Ok) return;
@@ -632,6 +710,13 @@ void fetchDeviceConfig()
 
   if (plugMode == "refill")
     fetchRefillTankMax();
+
+  // Mirror the just-synced config locally so the device can cold-start
+  // auto-dosing during a blackout. Write only on a real change (flash wear);
+  // always mark the config as loaded so the control plane runs.
+  if (changed)
+    persistConfig();
+  setConfigLoaded();
 }
 
 // =====================================================
@@ -719,6 +804,7 @@ static void syncR3TimersToTasmota()
 
 void fetchSchedules()
 {
+  if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) +
                "/rest/v1/relay_schedule?device=eq." + deviceName +
                "&status=eq.true&select=*";
@@ -742,7 +828,8 @@ void fetchSchedules()
       response = http.getString();
     http.end();
   }
-  if (code != 200) return;
+  noteUplinkResult(code == 200);
+  if (code != 200) { LOGF("[schedules] fetch failed: %d\n", code); return; }
 
   DynamicJsonDocument doc(4096);
   if (doc.capacity() == 0) { LOGLN("[SCHEDULE] JSON alloc failed (low heap)"); return; }
@@ -796,6 +883,9 @@ void fetchSchedules()
                   schedules[i].duration);
   }
 
+  // Mirror to SD so schedules survive a cold boot with no connectivity.
+  persistSchedules();
+
   // Push R3 schedules into plug-side Tasmota timers so they fire autonomously
   // even when the ESP32 is offline.
   syncR3TimersToTasmota();
@@ -812,20 +902,30 @@ void logDeviceActivity(const char *category, const char *action)
 
   String url = String(SUPABASE_URL) + "/rest/v1/activity_log";
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<320> doc;
   doc["device"]   = deviceName;
   doc["category"] = category;
   doc["action"]   = action;
   doc["source"]   = "device";
+  String rec = isoNow();
+  if (rec.length()) doc["recorded_at"] = rec;
 
   String payload;
   serializeJson(doc, payload);
 
+  // Buffer-then-drain: while an SD card is present the row goes through the
+  // journal (backfill.cpp POSTs it). If the SD write itself fails, fall back to
+  // a live POST rather than lose the row.
+  if (sdMounted() && journalAppend("activity_log", payload))
+    return;
+  if (!shouldTryUplink()) return;
+
   if (activeTransport == TRANSPORT_CELLULAR)
   {
     String resp;
-    cellularSupabaseRequest("POST", url, payload, "application/json",
-                            "return=minimal", resp);
+    int code = cellularSupabaseRequest("POST", url, payload, "application/json",
+                                       "return=minimal", resp);
+    noteUplinkResult(code >= 200 && code < 300);
     return;
   }
 
@@ -836,6 +936,7 @@ void logDeviceActivity(const char *category, const char *action)
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.addHeader("Prefer",        "return=minimal");
   http.setTimeout(3000);   // keep well under MQTT keepalive — this can run outside boot (e.g. rescan)
-  http.POST(payload);
+  int code = http.POST(payload);
+  noteUplinkResult(code >= 200 && code < 300);
   http.end();
 }

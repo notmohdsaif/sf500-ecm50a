@@ -6,9 +6,11 @@
 #include "relay.h"
 #include "logger.h"
 #include "mqtt_handler.h"   // publishRelayStatus()
-#include "cloud.h"           // logDeviceActivity()
+#include "cloud.h"           // logDeviceActivity(), isoNow()
 #include "cellular.h"        // detectCellularModem() — CELLDETECT diagnostic
 #include "globals.h"         // cellularCapable
+#include "journal.h"         // journalAppend()
+#include "sdcard.h"          // sdMounted()
 #include <HTTPClient.h>
 
 // =====================================================
@@ -31,25 +33,29 @@ void writeRelay(uint8_t num, bool state)
   // this is how a relay command gets confirmed and the card timer rendered.
   publishRelayStatus();
 
-  // relay_metrics is an audit-only Supabase write; leave it WiFi-only (matches
-  // the OTA / relay-logging scope — it just doesn't accrue while on cellular).
-  if (WiFi.status() == WL_CONNECTED)
+  // relay_metrics: buffer-then-drain through the SD journal when a card is
+  // present (so it also accrues on cellular and through an outage); otherwise
+  // the original WiFi-only direct POST, skipped during the offline debounce.
+  StaticJsonDocument<160> doc;
+  char relayId[10];
+  sprintf(relayId, "relay_%02d", num);
+  doc["device"]   = deviceName;
+  doc["relay_id"] = relayId;
+  doc["status"]   = state ? 1 : 0;
+  String rec = isoNow();
+  if (rec.length()) doc["recorded_at"] = rec;
+  String payload;
+  serializeJson(doc, payload);
+
+  if (sdMounted() && journalAppend("relay_metrics", payload))
+    return;
+
+  if (WiFi.status() == WL_CONNECTED && shouldTryUplink())
   {
     HTTPClient http;
     String url = String(SUPABASE_URL) + "/rest/v1/relay_metrics";
-
     if (http.begin(secureClient, url))
     {
-      StaticJsonDocument<128> doc;
-      char relayId[10];
-      sprintf(relayId, "relay_%02d", num);
-      doc["device"]   = deviceName;
-      doc["relay_id"] = relayId;
-      doc["status"]   = state ? 1 : 0;
-
-      String payload;
-      serializeJson(doc, payload);
-
       http.addHeader("Content-Type", "application/json");
       http.addHeader("apikey", SUPABASE_KEY);
       http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
@@ -369,6 +375,20 @@ void handleSerialCommands()
                                   : String("[Cellular] APN cleared"));
     }
   }
+  else if (cmd == "SDFORMAT" || cmd == "SDFORMAT CONFIRM")
+  {
+    if (cmd != "SDFORMAT CONFIRM")
+    {
+      LOGLN("[SD.format] This ERASES the whole card and writes a fresh FAT32 FS.");
+      LOGLN("[SD.format] Type exactly:  SDFORMAT CONFIRM   to proceed.");
+    }
+    else
+    {
+      LOGLN("[SD.format] Confirmed — starting.");
+      bool ok = sdFormatFat32();
+      LOGF("[SD.format] result: %s\n", ok ? "OK, card mounted" : "FAILED");
+    }
+  }
   else if (cmd == "CELLKILL")
   {
     LOGLN("[Cellular] Simulating link loss (modem radio OFF)");
@@ -392,6 +412,7 @@ void handleSerialCommands()
     LOGLN("CELLTEST     - Bring up 4G + MQTT-over-cellular (test)");
     LOGLN("CELLAPN [x]  - Show/set/clear the persisted cellular APN");
     LOGLN("CELLKILL/CELLOK - Sim link loss on/off (modem radio, test)");
+    LOGLN("SDFORMAT     - Wipe + FAT32-format the microSD (needs CONFIRM)");
     LOGLN("HELP         - This list");
     LOGLN("----------------\n");
   }

@@ -12,6 +12,10 @@
 #include "relay.h"
 #include "ota.h"
 #include "cellular.h"
+#include "sdcard.h"
+#include "persist.h"
+#include "journal.h"
+#include "backfill.h"
 #include <esp_task_wdt.h>
 
 // =====================================================
@@ -167,6 +171,8 @@ size_t getArduinoLoopTaskStackSize(void) {
   return 20480;
 }
 
+static void clearWifiReconnect();   // forward decl — defined with the rest of the WiFi ladder state below
+
 // Cellular fallback trigger. Called from loop()'s transport state machine when
 // WiFi is unreachable — whether saved creds failed to connect or there are none
 // at all (fresh unit / after a wifi_cmd forget). Lazily probes the modem once
@@ -201,6 +207,13 @@ static void tryCellularFallback()
   if (connectCellularData(cellularApn.c_str()))
   {
     activeTransport = TRANSPORT_CELLULAR;
+    // This WiFi outage is resolved (via a different transport) — tickWifiReconnect()
+    // won't run again until we're back on WIFI, so its ladder state would otherwise
+    // sit frozen for the whole cellular interlude. Left uncleared, a later WiFi drop
+    // (cellular dies, falls back to WiFi) resumes against that stale wifiDownSince and
+    // can satisfy shouldOpenPortalOffline()'s last-resort gate on the very first tick —
+    // reopening the D1 bug through a WiFi<->cellular bounce instead of a plain outage.
+    clearWifiReconnect();
     mqttClient.disconnect();
     mqttClient.setClient(cellularClient);
     LOGLN("[Cellular] Fallback active");
@@ -236,6 +249,98 @@ static void retryWifiInBackground(unsigned long now)
   WiFi.begin(ssid.c_str(), pass.c_str());
 }
 
+// --- Non-blocking WiFi down-switch (activeTransport == TRANSPORT_WIFI) ---
+// Replaces the old blocking 3x10s reconnect loop, which ran before the control
+// plane in loop() and, on a non-4G board (no cellular to hand off to), starved
+// readSensors()/checkAutoDosing() to a ~30s cadence for the whole outage.
+static unsigned long wifiDownSince       = 0;
+static unsigned long wifiLastKick        = 0;
+static unsigned long wifiLastCycle       = 0;
+static unsigned long wifiLastFallbackTry = 0;
+// Whether >=1 full radio power-cycle has fired since the link went down — gates
+// the offline portal, see shouldOpenPortalOffline(). Not its own flag: a cycle
+// always sets wifiLastCycle to a fresh `now`, while the down-detection init
+// below seeds it equal to wifiDownSince — so "have they diverged" is exactly
+// "did a cycle happen", with no separate state to keep in sync.
+static inline bool wifiHadCycle() { return wifiLastCycle != wifiDownSince; }
+
+// Link is good again — reset the ladder. Caller logs the transition (or not);
+// this is also called from a successful cellular handoff, which isn't one.
+static void clearWifiReconnect()
+{
+  if (wifiDownSince == 0) return;
+  wifiDownSince = wifiLastKick = wifiLastCycle = wifiLastFallbackTry = 0;
+}
+
+// Called every loop while we believe we are on WiFi but WL_CONNECTED is false.
+// Never blocks: one association kick per pass on a back-off ladder, association
+// finishes (or not) across later iterations.
+static void tickWifiReconnect(unsigned long now)
+{
+  if (wifiDownSince == 0)
+  {
+    wifiDownSince       = now;
+    wifiLastKick        = 0;
+    wifiLastCycle       = now;   // hold off the first power-cycle by one interval
+    wifiLastFallbackTry = 0;
+    LOGLN("[WiFi] Link lost — non-blocking reconnect started");
+  }
+
+  // Association kicks — skipped while the portal owns the radio (handlePortalLoop
+  // runs its own saved-credential retry). This runs every loop for the whole
+  // outage, so touch NVS only when a kick is actually due, not every pass.
+  if (!portalMode)
+  {
+    bool cycleDue = (now - wifiLastCycle >= WIFI_RECONNECT_CYCLE_MS);
+    bool kickDue  = (wifiLastKick == 0 || now - wifiLastKick >= WIFI_RECONNECT_KICK_MS);
+
+    if (cycleDue || kickDue)
+    {
+      wifiPrefs.begin("wifi", true);
+      String ssid = wifiPrefs.getString("ssid", "");
+      String pass = wifiPrefs.getString("pass", "");
+      wifiPrefs.end();
+
+      if (!ssid.isEmpty())
+      {
+        if (cycleDue)
+        {
+          // Full radio power-cycle. A bare WiFi.begin() loop does NOT re-associate
+          // after the AP disappeared entirely and came back (observed on a hotspot
+          // killed by airplane mode) — the supplicant needs the OFF->STA bounce.
+          wifiLastCycle = now;
+          wifiLastKick  = now;
+          LOGLN("[WiFi] reconnect: radio power-cycle");
+          WiFi.disconnect(true);         // drop link + radio off (WIFI_OFF below fully resets the iface)
+          WiFi.mode(WIFI_OFF);
+          delay(200);                    // bounded settle, not a wait loop
+          WiFi.mode(WIFI_STA);
+          WiFi.setAutoReconnect(true);
+          WiFi.begin(ssid.c_str(), pass.c_str());
+        }
+        else
+        {
+          wifiLastKick = now;
+          LOGF("[WiFi] reconnect kick (down %lus)\n",
+               (unsigned long)((now - wifiDownSince) / 1000));
+          WiFi.begin(ssid.c_str(), pass.c_str());
+        }
+      }
+    }
+  }
+
+  // Cellular handoff — (re)tried on roughly the cadence the blocking version used
+  // (once per fallback window). No-op on non-4G boards; on success the caller
+  // stops invoking us (activeTransport flips to TRANSPORT_CELLULAR).
+  if (now - wifiDownSince >= WIFI_DOWN_FALLBACK_MS &&
+      (wifiLastFallbackTry == 0 || now - wifiLastFallbackTry >= WIFI_DOWN_FALLBACK_MS))
+  {
+    wifiLastFallbackTry = now;
+    LOGLN("[WiFi] still down — trying cellular fallback");
+    tryCellularFallback();
+  }
+}
+
 // A human explicitly asked for the portal — open it right away, regardless of
 // transport state. (1) wifi_cmd: portal, now deliverable over cellular.
 // (2) 3x power-cycle gesture (forcePortalGesture, set in setup()).
@@ -260,19 +365,32 @@ static bool portalRequestedByHuman()
 // that must be provisioned, or one that's genuinely offline (WiFi down AND
 // cellular didn't take). Checked only AFTER the transport state machine has
 // had its shot at cellular.
-static bool shouldOpenPortalOffline()
+static bool shouldOpenPortalOffline(unsigned long now)
 {
   bool haveCell = (activeTransport == TRANSPORT_CELLULAR);
   bool wifiDown = (WiFi.status() != WL_CONNECTED);
+
+  // Neither branch below can return true once cellular is carrying traffic or
+  // WiFi is actually up — short-circuit before the NVS read (Preferences),
+  // which this function would otherwise pay on every loop (~100/s) for as
+  // long as the portal is closed, the overwhelming majority of the time.
+  if (haveCell || !wifiDown) return false;
 
   wifiPrefs.begin("wifi", true);
   bool haveCreds = wifiPrefs.getString("ssid", "").length() > 0;
   wifiPrefs.end();
 
-  if (!haveCreds && !haveCell) return true; // must be provisioned on-site
-  if (wifiDown && !haveCell)   return true; // genuinely offline
+  if (!haveCreds) return true; // must be provisioned on-site
 
-  return false;
+  // Genuinely offline with saved creds: this used to return true almost
+  // immediately (~1s into the outage), which opens the AP and tears STA mode
+  // down — defeating tickWifiReconnect()'s non-blocking ladder and falling
+  // back to the portal's 5-min saved-cred retry (measured 300s to reconnect,
+  // D1 bug). Now a true last resort: only once WiFi has been down long enough
+  // that a full radio power-cycle has already been tried and failed.
+  return wifiDownSince != 0 &&
+         now - wifiDownSince >= WIFI_PORTAL_LAST_RESORT_MS &&
+         wifiHadCycle();
 }
 
 // One-time "we have an uplink" initialisation — registration, time, sensors,
@@ -287,9 +405,14 @@ static void bringOnline()
 
   esp_task_wdt_reset();
   if (activeTransport == TRANSPORT_CELLULAR)
-    syncTimeFromModem();
+  {
+    if (syncTimeFromModem())
+      noteNtpSynced();   // real time now — clear the coarse-clock approx flag
+  }
   else
-    syncTimeWithNTP();
+  {
+    syncTimeWithNTP();   // calls noteNtpSynced() itself on success
+  }
 
   esp_task_wdt_reset();
   registerDevice();
@@ -298,6 +421,34 @@ static void bringOnline()
   {
     markAppValid();
     logDeviceActivity("system", "Device booted: v" FIRMWARE_VERSION);
+
+    // Offline-autonomy boot summary → activity_log. Makes the Phase 5
+    // fault-injection tests observable from Supabase without a serial console:
+    // the config values here are the local NVS/SD mirror the device resumed on
+    // (cloud refresh happens a few lines below), so they reveal
+    // cold-start-from-defaults vs from real persisted config; journalPendingB
+    // shows what a power-cut left in the buffer.
+    {
+      char sdTok[24];
+      switch (sdHealth())
+      {
+        case SD_HEALTH_OK:
+          snprintf(sdTok, sizeof(sdTok), "ok/%luMB",
+                   (unsigned long)(sdFreeBytesCached() / (1024ULL * 1024ULL)));
+          break;
+        case SD_HEALTH_UNREADABLE: strlcpy(sdTok, "unreadable", sizeof(sdTok)); break;
+        default:                   strlcpy(sdTok, "absent",     sizeof(sdTok)); break;
+      }
+      char b[240];
+      snprintf(b, sizeof(b),
+               "boot summary: sd=%s cfg=%s ecTarget=%.2f autoDosing=%d mixing=%d "
+               "dosingTime=%lu schedules=%d journalPendingB=%lu clock=%s",
+               sdTok, configLoaded() ? "loaded" : "none", ecTarget, autoDosing ? 1 : 0,
+               autoMixing ? 1 : 0, (unsigned long)dosingTime, scheduleCount,
+               (unsigned long)(sdMounted() ? journalPendingBytes() : 0),
+               clockIsApprox() ? "approx" : "ntp");
+      logDeviceActivity("system", b);
+    }
     if (activeTransport == TRANSPORT_WIFI)
       checkForOTAUpdate();   // ota.cpp uses its own WiFiClientSecure — WiFi only
     esp_task_wdt_reset();
@@ -319,6 +470,16 @@ void setup()
   LOGLN("\n\n=== ESP32-S3 ECM50-A SF500 System v2.1 ===\n");
   LOGF("[DIAG] Reset: %s | Heap: %d bytes\n", resetReasonStr(esp_reset_reason()), ESP.getFreeHeap());
 
+  // --- microSD (offline buffering + config persistence) ---
+  if (sdInit())
+  {
+    LOGF("[SD] card present (CD=%d), free %llu MB\n",
+         sdCardDetect(), sdFreeBytes() / (1024ULL * 1024ULL));
+    journalBootRecover();   // finish any compaction swap a power cut interrupted
+  }
+  else
+    LOGLN("[SD] unavailable — offline buffering + schedule persistence disabled");
+
   // --- Relays ---
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
@@ -332,6 +493,7 @@ void setup()
   // --- WiFi init ---
   WiFi.persistent(false);
   WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);   // supplicant self-retries between our kicks (see tickWifiReconnect)
   WiFi.mode(WIFI_OFF);
   delay(100);
   WiFi.mode(WIFI_STA);
@@ -446,8 +608,36 @@ void setup()
   if (wifiState == STATE_ONLINE && startupTime == 0)
     bringOnline();
 
-  // Watchdog: if loop() freezes for >60s, hard-reset the device.
-  // 60s covers worst-case WiFi reconnect (30s) + one blocking HTTP call (6s).
+  // --- No cloud config reachable at boot: fall back to the local mirror so
+  //     auto-dosing + water-in detection resume autonomously. Do NOT touch
+  //     startupTime — bringOnline() must still run once a transport appears. ---
+  if (!configLoaded())
+  {
+    if (time(nullptr) < 1000000000)
+      seedClockFromStore();
+    if (loadConfigLocal())
+    {
+      loadSchedulesLocal();
+      // Smart-dosing calibration + rain-reset day live in their own NVS
+      // namespaces, not the persist mirror. bringOnline() loads them but only
+      // after registration — a cold blackout boot never gets there, so load
+      // them here or checkAutoDosing() resumes as if never calibrated and runs
+      // a fresh calibration dose.
+      loadSmartCalibration();
+      loadRainResetState();
+      setRunState(RS_OFFLINE_AUTONOMOUS);
+      LOGLN("[boot] running autonomously from local config (no cloud reachable)");
+    }
+    else
+    {
+      LOGLN("[boot] no local config yet — waiting for first uplink");
+    }
+  }
+
+  // Watchdog: if loop() freezes for >60s, hard-reset the device. The WiFi
+  // down-switch is non-blocking now; the remaining worst case is the cellular
+  // bring-up path (modem power-on + registration) plus one blocking HTTP call,
+  // each already fed with esp_task_wdt_reset().
   esp_task_wdt_init(60, true);
   esp_task_wdt_add(NULL);
 }
@@ -463,6 +653,17 @@ void loop()
 
   checkRelayTimers();
   handleSerialCommands();
+  switch (sdTick())   // debounced microSD present/removed handling
+  {
+    case SD_EVT_REMOVED:
+      logDeviceActivity("system", "microSD removed — buffering paused");
+      break;
+    case SD_EVT_REMOUNTED:
+      logDeviceActivity("system", "microSD reinserted — remounted");
+      break;
+    default:
+      break;
+  }
 
   // Clear the 3x power-cycle gesture counter once we've run long enough that
   // this clearly wasn't part of a rapid reset sequence.
@@ -488,48 +689,31 @@ void loop()
   }
 
   // --- Transport state machine: WiFi <-> cellular ---
-  // Down-switch: WiFi is gone and we're still nominally on WiFi. Try a few
-  // quick reconnects, then hand off to cellular (no portal).
-  if (WiFi.status() != WL_CONNECTED && activeTransport == TRANSPORT_WIFI)
+  // Down-switch: WiFi is gone while we're still nominally on WiFi. Non-blocking
+  // (see tickWifiReconnect) — the control plane above keeps its 1s cadence
+  // through the outage; association finishes across later loop iterations, and
+  // cellular fallback is (re)tried once the link has been down long enough.
+  static unsigned long wifiReconnectStableSince = 0;
+  if (activeTransport == TRANSPORT_WIFI)
   {
-    bool reconnected = false;
-
-    if (!portalMode)   // when the portal is up it does its own retry
+    if (WiFi.status() == WL_CONNECTED)
     {
-      wifiPrefs.begin("wifi", true);
-      String savedSSID = wifiPrefs.getString("ssid", "");
-      String savedPass = wifiPrefs.getString("pass", "");
-      wifiPrefs.end();
-
-      if (savedSSID.length() > 0)
+      // Debounced: a flapping AP that briefly re-associates would otherwise
+      // reset wifiDownSince/wifiLastCycle on every blip, perpetually
+      // restarting the ladder and starving shouldOpenPortalOffline()'s
+      // last-resort gate of the sustained downtime it needs to ever fire.
+      if (wifiReconnectStableSince == 0) wifiReconnectStableSince = now;
+      if (wifiDownSince != 0 && now - wifiReconnectStableSince >= WIFI_RECONNECT_STABLE_MS)
       {
-        LOGLN("[WiFi] Connection lost, reconnecting...");
-        for (int attempt = 1; attempt <= 3 && !reconnected; attempt++)
-        {
-          LOGF("[WiFi] Reconnect attempt %d/3...\n", attempt);
-          WiFi.disconnect(false);
-          WiFi.begin(savedSSID.c_str(), savedPass.c_str());
-          unsigned long start = millis();
-          while (WiFi.status() != WL_CONNECTED && millis() - start < 10000)
-          {
-            delay(200);
-            esp_task_wdt_reset();   // 3x10s here + stacked failing REST calls
-                                    // earlier this iteration can otherwise cross
-                                    // the 60s task watchdog and reboot mid-switch
-            checkRelayTimers();
-            handleSerialCommands();
-          }
-          reconnected = (WiFi.status() == WL_CONNECTED);
-          if (!reconnected)
-            LOGF("[WiFi] Attempt %d failed\n", attempt);
-        }
+        LOGLNS("[WiFi] Re-associated: " + WiFi.localIP().toString());
+        clearWifiReconnect();
       }
     }
-
-    if (reconnected)
-      LOGLNS("[WiFi] Reconnected: " + WiFi.localIP().toString());
     else
-      tryCellularFallback();   // brings up cellular if a modem + APN are present
+    {
+      wifiReconnectStableSince = 0;
+      tickWifiReconnect(now);
+    }
   }
 
   // Background WiFi retry while on cellular with no portal (non-blocking).
@@ -625,7 +809,7 @@ void loop()
   }
 
   // --- Open the AP if there's no other way to be useful (cellular already tried) ---
-  if (!portalMode && shouldOpenPortalOffline())
+  if (!portalMode && shouldOpenPortalOffline(now))
   {
     portalAutoOpened = true;
     startWiFiPortal();
@@ -640,16 +824,102 @@ void loop()
     portalAutoOpened = false;
   }
 
-  // No uplink at all (cellular fallback didn't take) — skip the periodic work.
+  // --- Late local-config fallback: booted online but lost the link before the
+  //     first fetchDeviceConfig() ever completed. Retry the NVS/SD mirror at
+  //     most every 30s so the control plane can start. ---
+  static unsigned long lastLocalCfgTry = 0;
+  if (!configLoaded() && (now - lastLocalCfgTry >= 30000UL || lastLocalCfgTry == 0))
+  {
+    lastLocalCfgTry = now;
+    if (time(nullptr) < 1000000000) seedClockFromStore();
+    if (loadConfigLocal())
+    {
+      loadSchedulesLocal();
+      loadSmartCalibration();   // own NVS namespace, not in the persist mirror
+      loadRainResetState();
+      LOGLN("[run] local config loaded — control plane active");
+    }
+  }
+
+  // --- Run-state (observability only) ---
+  if (portalMode)                 setRunState(RS_PROVISIONING);
+  else if (haveUplink())          setRunState(RS_ONLINE);
+  else if (configLoaded())        setRunState(RS_OFFLINE_AUTONOMOUS);
+
+  // --- Control plane — runs EVERY loop, online or not, as long as a config
+  //     (cloud, or local NVS/SD) has been loaded. Dosing, water-in (WL)
+  //     detection and refill cutoff must not stop during a WiFi + cellular
+  //     blackout, nor on a cold boot with no connectivity. Everything below
+  //     that needs the backend is shouldTryUplink()-gated and no-ops when
+  //     offline (with one probe attempt per minute to recover). ---
+  if (configLoaded())
+  {
+    if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
+    {
+      readSensors();
+      lastSensorRead = now;
+      checkRefillCutoff();
+      if (autoDosing && ecSensorFound)
+        checkAutoDosing();
+    }
+    if (now - lastScheduleCheck >= SCHEDULE_CHECK_INTERVAL)
+    {
+      checkSchedules();
+      lastScheduleCheck = now;
+    }
+
+    // Sensor upload must run offline too — when a card is present it journals
+    // the readings for later backfill instead of POSTing (see cloud.cpp).
+    if (now - lastSensorUpload >= SENSOR_UPLOAD_INTERVAL)
+    {
+      if (sensors.hasData)
+        uploadSensorReadings();
+      lastSensorUpload = now;
+    }
+
+    // Snapshot the wall clock every 5 min so a power cut during a blackout
+    // reboots with a clock that is at worst one interval stale.
+    static unsigned long lastClockPersist = 0;
+    if (now - lastClockPersist >= 300000UL)
+    {
+      persistClock();
+      lastClockPersist = now;
+    }
+  }
+
+  // --- loopTask stack + heap high-water (Phase 5: the v1.2.5 crash class —
+  //     SdFat + ArduinoJson + mbedTLS all run on this task). Tracks the lowest
+  //     free stack seen so far; logs only when it drops or every 60s. Must run
+  //     before the offline early-return below — a full WiFi+cellular outage is
+  //     exactly the condition this is meant to catch (D3 fix: used to sit after
+  //     the return and go silent for the whole outage). ---
+  {
+    static unsigned long lastStackLog = 0;
+    static uint32_t stackMinEver = 0xFFFFFFFF;
+    uint32_t freeStack = (uint32_t)uxTaskGetStackHighWaterMark(NULL); // bytes (ESP-IDF)
+    bool dropped = freeStack < stackMinEver;
+    if (dropped) stackMinEver = freeStack;
+    if (dropped || now - lastStackLog >= 60000UL)
+    {
+      LOGF("[stack] loopTask free now %lu B, min-ever %lu B (of ~20480) | heap %lu B\n",
+           (unsigned long)freeStack, (unsigned long)stackMinEver,
+           (unsigned long)ESP.getFreeHeap());
+      lastStackLog = now;
+    }
+  }
+
+  // No uplink at all (cellular fallback didn't take) — the control plane above
+  // already ran. Skip the backend-facing periodic work; stay tight if we're
+  // running autonomously so dosing keeps its cadence.
   if (WiFi.status() != WL_CONNECTED && activeTransport != TRANSPORT_CELLULAR)
   {
-    delay(500);
+    delay(configLoaded() ? 20 : 500);
     return;
   }
 
   if (!isRegistered)
   {
-    delay(1000);
+    delay(configLoaded() ? 20 : 1000);
     return;
   }
 
@@ -670,6 +940,11 @@ void loop()
   if (!mqttClient.connected())
     reconnectMQTT();
   mqttClient.loop();
+
+  // A live broker connection is proof the WAN path works — keep the REST uplink
+  // armed off it every loop, not just on the reconnect edge, so a device whose
+  // broker link never drops can still recover REST after a transient failure.
+  noteMqttState(mqttClient.connected());
 
   // How long has MQTT been unreachable while we believe we are on cellular? The
   // link-health check above uses this to catch a zombie data session that
@@ -721,22 +996,13 @@ void loop()
     }
   }
 
-  // --- Periodic tasks ---
-  if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
-  {
-    readSensors();
-    lastSensorRead = now;
-    checkRefillCutoff();
-    if (autoDosing && ecSensorFound)
-      checkAutoDosing();
-  }
+  // --- Periodic tasks (backend-facing; the control plane ran earlier) ---
 
-  if (now - lastSensorUpload >= SENSOR_UPLOAD_INTERVAL)
-  {
-    if (sensors.hasData)
-      uploadSensorReadings();
-    lastSensorUpload = now;
-  }
+  // Drain the SD telemetry journal first, before the periodic REST calls — it
+  // is the recovery path after an outage and must not be starved of the single
+  // offline probe slot by the liveness calls below. Self-rate-limited, bounded,
+  // skipped mid-dose.
+  backfillTick();
 
   if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL)
   {
@@ -754,12 +1020,6 @@ void loop()
   {
     fetchSchedules();
     lastScheduleFetch = now;
-  }
-
-  if (now - lastScheduleCheck >= SCHEDULE_CHECK_INTERVAL)
-  {
-    checkSchedules();
-    lastScheduleCheck = now;
   }
 
   // --- Tasmota plug state poll (HTTP transport only; inert on MQTT-transport devices) ---

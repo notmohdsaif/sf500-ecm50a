@@ -14,3 +14,5 @@ void updateDeviceStatus(const char *status);
 void fetchDeviceConfig();
 void fetchSchedules();
 void logDeviceActivity(const char *category, const char *action);
+String isoNow();   // ISO-8601 +08:00 capture time, or "" before the clock is valid
+String isoFromEpoch(time_t t);   // isoNow(), for an arbitrary epoch — or "" if implausible
