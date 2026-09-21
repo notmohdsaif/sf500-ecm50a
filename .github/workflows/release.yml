@@ -37,7 +37,7 @@ jobs:
           EOF
 
       - name: Build firmware
-        run: pio run
+        run: pio run -e esp32-s3-devkitm-1
         working-directory: .
 
       - name: Rename binary with version tag
