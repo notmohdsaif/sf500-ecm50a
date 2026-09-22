@@ -384,7 +384,7 @@ void updateDeviceStatus(const char *status)
   if (!shouldTryUplink()) return;
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
-  StaticJsonDocument<128> doc;
+  StaticJsonDocument<256> doc;
   doc["status"] = status;
 
   time_t now = time(nullptr);
@@ -397,6 +397,20 @@ void updateDeviceStatus(const char *status)
             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
             ti.tm_hour, ti.tm_min, ti.tm_sec);
     doc["last_heartbeat_at"] = ts;
+  }
+
+  doc["fw_version"] = FIRMWARE_VERSION;
+  doc["connectivity"] = (activeTransport == TRANSPORT_CELLULAR) ? "cellular" : "wifi";
+
+  switch (sdHealth())
+  {
+    case SD_HEALTH_OK:
+      doc["sd_state"]    = "ok";
+      doc["sd_free_mb"]  = (uint32_t)(sdFreeBytesCached() / (1024ULL * 1024ULL));
+      doc["sd_total_mb"] = sdTotalMbCached();
+      break;
+    case SD_HEALTH_UNREADABLE: doc["sd_state"] = "unreadable"; break;
+    default:                   doc["sd_state"] = "absent";     break;
   }
 
   String payload;

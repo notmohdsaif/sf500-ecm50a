@@ -25,8 +25,15 @@ void reconnectMQTT()
   if (millis() - lastTry < 5000UL) return;
   lastTry = millis();
 
+  // LWT: an empty retained payload on relay_status, published by the broker
+  // itself on an ungraceful disconnect (keepalive timeout/crash/power loss).
+  // Per MQTT spec, a retained message with a zero-length payload deletes the
+  // previously-retained one — so a client subscribing during such an outage
+  // sees nothing (the pre-retain-fix behavior) instead of a stale, expired
+  // relay/timer state with no signal it's out of date.
   String clientId = "SF500_" + lastSix;
-  if (!mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS))
+  if (!mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS,
+                           topicRelayStatus.c_str(), 0, true, ""))
   {
     noteMqttState(false);
     return;
@@ -297,7 +304,7 @@ void publishRelayStatus(const char* r3Reason)
 
   char buf[384];
   serializeJson(doc, buf);
-  mqttClient.publish(topicRelayStatus.c_str(), buf);
+  mqttClient.publish(topicRelayStatus.c_str(), buf, true);
 }
 
 // =====================================================

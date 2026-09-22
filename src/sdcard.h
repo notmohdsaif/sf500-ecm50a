@@ -30,6 +30,10 @@ SdHealth sdHealth();
 // free). 0 when no card. Safe to call every telemetry publish.
 uint64_t sdFreeBytesCached();
 
+// Total card capacity, MB. 0 when no card. Cheap: sectorCount() is a value
+// SdFat cached from the card's CSD register at mount, no SD I/O per call.
+uint32_t sdTotalMbCached();
+
 enum SdEvent { SD_EVT_NONE, SD_EVT_REMOVED, SD_EVT_REMOUNTED };
 
 // Poll from loop(): debounced card-detect handling. Drops the mount on a pull

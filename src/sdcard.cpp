@@ -121,6 +121,12 @@ uint64_t sdFreeBytesCached()
   return freeCache;
 }
 
+uint32_t sdTotalMbCached()
+{
+  if (!mounted || !sd.card()) return 0;
+  return (uint32_t)(sd.card()->sectorCount() / 2048UL);
+}
+
 bool sdFormatFat32()
 {
   // Reuse the card object sdInit()'s probe already brought up. Re-running
