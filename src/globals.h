@@ -217,7 +217,11 @@ enum AutoDosingAlarmReason {
   ALARM_REASON_NONE,
   ALARM_REASON_NO_EC_RESPONSE,
   ALARM_REASON_EC_CEILING,
-  ALARM_REASON_SMART_CAL_FAILED
+  ALARM_REASON_SMART_CAL_FAILED,
+  ALARM_REASON_EC_DATA_UNAVAILABLE // AUTO_SAMPLING stall guard — probe present but not
+                                    // producing usable reads; refill can't fix this, so
+                                    // intentionally excluded from the refill auto-recovery
+                                    // checks below (those only match ALARM_REASON_NO_EC_RESPONSE)
 };
 extern AutoDosingAlarmReason lastAlarmReason;
 extern unsigned long   autoStateEnteredAt;

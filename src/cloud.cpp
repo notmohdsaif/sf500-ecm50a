@@ -350,7 +350,7 @@ void uploadSensorReadings()
     JsonObject wd = arr.createNestedObject();
     wd["device"]    = deviceName;
     wd["sensor_id"] = wdId;
-    wd["value"]     = sensors.windDir;
+    wd["value"]     = (int)sensors.windDir; // matches the live MQTT `met.wd` (int) cast
 
     JsonObject no = arr.createNestedObject();
     no["device"]    = deviceName;
@@ -360,12 +360,12 @@ void uploadSensorReadings()
     JsonObject p1 = arr.createNestedObject();
     p1["device"]    = deviceName;
     p1["sensor_id"] = p1Id;
-    p1["value"]     = sensors.pm25;
+    p1["value"]     = (int)sensors.pm25; // matches the live MQTT `met.pm25` (int) cast
 
     JsonObject p2 = arr.createNestedObject();
     p2["device"]    = deviceName;
     p2["sensor_id"] = p2Id;
-    p2["value"]     = sensors.pm10;
+    p2["value"]     = (int)sensors.pm10; // matches the live MQTT `met.pm10` (int) cast
   }
 
   String rec = isoNow();
