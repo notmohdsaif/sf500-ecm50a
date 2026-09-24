@@ -27,8 +27,8 @@ struct LocalConfig {
   bool     plugEnabled;
   char     plugTopic[48];
   char     plugHost[40];
-  uint8_t  ecSensorId, wlSensorId, ambSensorId, rainSensorId;
-  bool     ecFound, wlFound, ambFound, rainFound;
+  uint8_t  ecSensorId, wlSensorId, ambSensorId, rainSensorId, metSensorId;
+  bool     ecFound, wlFound, ambFound, rainFound, metFound;
   int      lastRainResetDay;
 };
 

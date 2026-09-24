@@ -27,10 +27,12 @@ String configToJson(const LocalConfig& c)
   d["wlSensorId"]     = c.wlSensorId;
   d["ambSensorId"]    = c.ambSensorId;
   d["rainSensorId"]   = c.rainSensorId;
+  d["metSensorId"]    = c.metSensorId;
   d["ecFound"]        = c.ecFound;
   d["wlFound"]        = c.wlFound;
   d["ambFound"]       = c.ambFound;
   d["rainFound"]      = c.rainFound;
+  d["metFound"]       = c.metFound;
   d["lastRainResetDay"] = c.lastRainResetDay;
 
   String s;
@@ -59,10 +61,12 @@ bool configFromJson(const String& json, LocalConfig& c)
   c.wlSensorId   = d["wlSensorId"]   | 0;
   c.ambSensorId  = d["ambSensorId"]  | 0;
   c.rainSensorId = d["rainSensorId"] | 0;
+  c.metSensorId  = d["metSensorId"]  | 0;
   c.ecFound   = d["ecFound"]   | false;
   c.wlFound   = d["wlFound"]   | false;
   c.ambFound  = d["ambFound"]  | false;
   c.rainFound = d["rainFound"] | false;
+  c.metFound  = d["metFound"]  | false;
   c.lastRainResetDay = d["lastRainResetDay"] | -1;
   return true;
 }
@@ -102,10 +106,12 @@ void snapshotGlobalsToConfig(LocalConfig& c)
   c.wlSensorId   = wlSensorId;
   c.ambSensorId  = ambSensorId;
   c.rainSensorId = rainSensorId;
+  c.metSensorId  = metSensorId;
   c.ecFound   = ecSensorFound;
   c.wlFound   = wlSensorFound;
   c.ambFound  = ambSensorFound;
   c.rainFound = rainSensorFound;
+  c.metFound  = metSensorFound;
   c.lastRainResetDay = lastRainResetDay;
 }
 
@@ -127,10 +133,12 @@ void applyConfigToGlobals(const LocalConfig& c)
   wlSensorId   = c.wlSensorId;
   ambSensorId  = c.ambSensorId;
   rainSensorId = c.rainSensorId;
+  metSensorId  = c.metSensorId;
   ecSensorFound   = c.ecFound;
   wlSensorFound   = c.wlFound;
   ambSensorFound  = c.ambFound;
   rainSensorFound = c.rainFound;
+  metSensorFound  = c.metFound;
   lastRainResetDay = c.lastRainResetDay;
   plugUseHttp = tasmotaPlugEnabled && plugHttpHost.length() > 0;
 }
@@ -156,8 +164,9 @@ bool persistConfig()
   cfgnvs.putUChar("wlId",   c.wlSensorId);
   cfgnvs.putUChar("ambId",  c.ambSensorId);
   cfgnvs.putUChar("rainId", c.rainSensorId);
+  cfgnvs.putUChar("metId",  c.metSensorId);
   cfgnvs.putUChar("found",
-    (c.ecFound ? 1 : 0) | (c.wlFound ? 2 : 0) | (c.ambFound ? 4 : 0) | (c.rainFound ? 8 : 0));
+    (c.ecFound ? 1 : 0) | (c.wlFound ? 2 : 0) | (c.ambFound ? 4 : 0) | (c.rainFound ? 8 : 0) | (c.metFound ? 16 : 0));
   cfgnvs.putInt("rainDay", c.lastRainResetDay);
   cfgnvs.end();
 
@@ -190,8 +199,9 @@ bool loadConfigLocal()
     c.wlSensorId   = cfgnvs.getUChar("wlId",   0);
     c.ambSensorId  = cfgnvs.getUChar("ambId",  0);
     c.rainSensorId = cfgnvs.getUChar("rainId", 0);
+    c.metSensorId  = cfgnvs.getUChar("metId",  0);
     uint8_t f = cfgnvs.getUChar("found", 0);
-    c.ecFound = f & 1; c.wlFound = f & 2; c.ambFound = f & 4; c.rainFound = f & 8;
+    c.ecFound = f & 1; c.wlFound = f & 2; c.ambFound = f & 4; c.rainFound = f & 8; c.metFound = f & 16;
     c.lastRainResetDay = cfgnvs.getInt("rainDay", -1);
   }
   cfgnvs.end();

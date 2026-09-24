@@ -66,6 +66,10 @@
 #define RAIN_SCAN_START 30 // Rain sensor (single fixed ID)
 #define RAIN_SCAN_END 30
 #define RAIN_REG_TIPS 0    // Holding register: rainfall in 0.1mm increments
+#define MET_SENSOR_ID 35    // Weather station — fixed ID, confirmed via bench test (not a scan range)
+#define MET_REG_BASE 500    // Block read start: wind speed/force/dir(x2)/humidity/temp/noise/pm2.5/pm10
+#define MET_REG_COUNT 9     // Registers 500-508 inclusive
+#define MET_REG_LUX 511     // Separate single-register read (low 16 bits of the 32-bit precise Lux value, raw = lux, no scaling — coarser reg 512's x100-Lux single-register reading was too low-resolution at indoor light levels)
 
 // Timing Constants (milliseconds)
 #define SENSOR_READ_INTERVAL 1000UL
@@ -131,7 +135,7 @@
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.2.8"
+#define FIRMWARE_VERSION "1.2.9"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

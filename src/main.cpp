@@ -62,11 +62,13 @@ uint8_t ecSensorId   = 0;
 uint8_t wlSensorId   = 0;
 uint8_t ambSensorId  = 0;
 uint8_t rainSensorId = 0;
+uint8_t metSensorId  = 0;
 int     lastRainResetDay = -1;
 bool ecSensorFound   = false;
 bool wlSensorFound   = false;
 bool ambSensorFound  = false;
 bool rainSensorFound = false;
+bool metSensorFound  = false;
 SensorData sensors;
 
 bool relayStates[2] = {false, false};

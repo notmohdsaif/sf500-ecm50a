@@ -117,16 +117,42 @@ void initSensors()
   if (!rainSensorFound)
     LOGF("Rain: not found (scanned IDs %d–%d)\n", RAIN_SCAN_START, RAIN_SCAN_END);
 
-  int found = (int)ecSensorFound + (int)wlSensorFound + (int)ambSensorFound + (int)rainSensorFound;
-  LOGF("Found: %d/4 sensors\n", found);
+  // Weather station (MET) — fixed ID, not a scan range (confirmed via bench test)
+  metSensorFound = false;
+  modbus.begin(MET_SENSOR_ID, Serial1);
+  delay(50);
+  if (modbus.readHoldingRegisters(MET_REG_BASE, MET_REG_COUNT) == modbus.ku8MBSuccess)
+  {
+    metSensorId    = MET_SENSOR_ID;
+    metSensorFound = true;
+    LOGF("Weather station: ID %d\n", MET_SENSOR_ID);
+  }
+  else
+  {
+    LOGF("Weather station: not found (ID %d)\n", MET_SENSOR_ID);
+  }
+
+  // Ambient and MET share sensors.ambTemp/ambHumid/ambLux (Ambient takes
+  // priority when both are present, see readSensors()) — this is expected to
+  // never happen in practice, so flag it loudly if it ever does, since MET's
+  // temp/humid/lux would otherwise be silently dropped with no other signal.
+  if (ambSensorFound && metSensorFound)
+  {
+    LOGLN("WARNING: both Ambient and MET sensors detected — MET's temp/humid/lux will be ignored (Ambient takes priority)");
+    logDeviceActivity("system", "WARNING: Ambient + MET sensors both present — MET temp/humid/lux ignored");
+  }
+
+  int found = (int)ecSensorFound + (int)wlSensorFound + (int)ambSensorFound + (int)rainSensorFound + (int)metSensorFound;
+  LOGF("Found: %d/5 sensors\n", found);
 
   String msg = "Sensor init: ";
   if (ecSensorFound)   msg += "EC(ID="   + String(ecSensorId)   + ") ";
   if (wlSensorFound)   msg += "WL(ID="   + String(wlSensorId)   + ") ";
   if (ambSensorFound)  msg += "AMB(ID="  + String(ambSensorId)  + ") ";
-  if (rainSensorFound) msg += "RAIN(ID=" + String(rainSensorId) + ")";
+  if (rainSensorFound) msg += "RAIN(ID=" + String(rainSensorId) + ") ";
+  if (metSensorFound)  msg += "MET(ID="  + String(metSensorId)  + ")";
   msg.trim();
-  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
+  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound && !metSensorFound)
     msg += "none found";
   logDeviceActivity("system", msg.c_str());
 }
@@ -357,13 +383,57 @@ void readSensors()
     checkRainDailyReset();
   }
 
+  // --- Weather Station (MET) ---
+  if (metSensorFound)
+  {
+    modbus.begin(metSensorId, Serial1);
+    delay(10);
+
+    if (modbus.readHoldingRegisters(MET_REG_BASE, MET_REG_COUNT) == modbus.ku8MBSuccess)
+    {
+      uint16_t windSpeedRaw  = modbus.getResponseBuffer(0); // 500
+      // reg 501 (wind force) and 502 (wind dir sector) intentionally unused — degrees preferred
+      uint16_t windDirRaw    = modbus.getResponseBuffer(3); // 503
+      uint16_t humidRaw      = modbus.getResponseBuffer(4); // 504
+      uint16_t tempRaw       = modbus.getResponseBuffer(5); // 505
+      uint16_t noiseRaw      = modbus.getResponseBuffer(6); // 506
+      uint16_t pm25Raw       = modbus.getResponseBuffer(7); // 507
+      uint16_t pm10Raw       = modbus.getResponseBuffer(8); // 508
+
+      sensors.windSpeed = windSpeedRaw / 100.0f;
+      sensors.windDir   = (float)windDirRaw;
+      // Only Ambient OR MET populates the shared temp/humid/lux fields per boot
+      // (ambSensorFound and metSensorFound are mutually exclusive in practice) —
+      // Ambient's own read block above already ran first and would have set
+      // these if present, so MET only overwrites them when Ambient is absent.
+      if (!ambSensorFound)
+      {
+        sensors.ambTemp  = tempRaw  / 10.0f;
+        sensors.ambHumid = humidRaw / 10.0f;
+      }
+      sensors.noise = noiseRaw / 10.0f;
+      sensors.pm25  = (float)pm25Raw;
+      sensors.pm10  = (float)pm10Raw;
+      success = true;
+    }
+    delay(20);
+
+    if (modbus.readHoldingRegisters(MET_REG_LUX, 1) == modbus.ku8MBSuccess)
+    {
+      uint16_t luxRaw = modbus.getResponseBuffer(0);
+      if (!ambSensorFound)
+        sensors.ambLux = (float)luxRaw;
+    }
+    delay(50);
+  }
+
   if (success)
     sensors.hasData = true;
 
   // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
   if (mqttClient.connected())
   {
-    StaticJsonDocument<1792> doc;   // +256 for the "sd" block
+    StaticJsonDocument<2048> doc;   // +256 for the "sd" block, +256 for the "met" block
 
     if (success)
     {
@@ -374,12 +444,21 @@ void readSensors()
       }
       if (wlSensorFound)
         doc["wl"] = sensors.wl;
-      if (ambSensorFound)
+      if (ambSensorFound || metSensorFound)
       {
         JsonObject ambObj  = doc.createNestedObject("amb");
         ambObj["temp"]     = serialized(String(sensors.ambTemp,  1));
         ambObj["humid"]    = serialized(String(sensors.ambHumid, 1));
         ambObj["lux"]      = serialized(String(sensors.ambLux,   0));
+      }
+      if (metSensorFound)
+      {
+        JsonObject metObj = doc.createNestedObject("met");
+        metObj["ws"]      = serialized(String(sensors.windSpeed, 2));
+        metObj["wd"]      = (int)sensors.windDir;
+        metObj["noise"]   = serialized(String(sensors.noise, 1));
+        metObj["pm25"]    = (int)sensors.pm25;
+        metObj["pm10"]    = (int)sensors.pm10;
       }
       if (rainSensorFound)
         doc["rain"] = serialized(String(sensors.rainfall, 1));
@@ -486,10 +565,11 @@ void readSensors()
     sensorsObj["wl"]   = wlSensorFound;
     sensorsObj["amb"]  = ambSensorFound;
     sensorsObj["rain"] = rainSensorFound;
+    sensorsObj["met"]  = metSensorFound;
 
     doc["rescan_seq"] = rescanSeq;
 
-    char buf[1792];
+    char buf[2048];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }

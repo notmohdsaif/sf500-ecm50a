@@ -173,13 +173,13 @@ void registerDevice()
 
 void uploadSensorConfig()
 {
-  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
+  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound && !metSensorFound)
     return;
   if (!shouldTryUplink()) return;
 
   String url = String(SUPABASE_URL) + "/rest/v1/device_management?device=eq." + deviceName;
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;   // bumped for up to 5 sensor entries (incl. weather station)
   JsonObject sensorObj = doc.createNestedObject("sensor");
 
   int idx = 1;
@@ -213,6 +213,14 @@ void uploadSensorConfig()
     JsonObject s = sensorObj.createNestedObject(key);
     s["ID"]     = String(rainSensorId);
     s["type"]   = "Rain";
+    s["status"] = "online";
+  }
+  if (metSensorFound)
+  {
+    String key = "sensor" + String(idx++);
+    JsonObject s = sensorObj.createNestedObject(key);
+    s["ID"]     = String(metSensorId);
+    s["type"]   = "MET";
     s["status"] = "online";
   }
 
@@ -258,7 +266,7 @@ void uploadSensorReadings()
 
   String url = String(SUPABASE_URL) + "/rest/v1/sensor_metrics";
 
-  DynamicJsonDocument doc(1792);   // fits a full sensor set + a recorded_at per row
+  DynamicJsonDocument doc(3072);   // fits a full sensor set (incl. weather station) + a recorded_at per row
   if (doc.capacity() == 0) { LOGLN("[UPLOAD] JSON alloc failed (low heap)"); return; }
   JsonArray arr = doc.to<JsonArray>();
 
@@ -290,12 +298,13 @@ void uploadSensorReadings()
     wl["value"]     = sensors.wl;
   }
 
-  if (ambSensorFound)
+  if (ambSensorFound || metSensorFound)
   {
+    uint8_t ambientLikeId = ambSensorFound ? ambSensorId : metSensorId;
     char atId[8], ahId[8], alId[8];
-    sprintf(atId, "at_%02d", ambSensorId);
-    sprintf(ahId, "ah_%02d", ambSensorId);
-    sprintf(alId, "al_%02d", ambSensorId);
+    sprintf(atId, "at_%02d", ambientLikeId);
+    sprintf(ahId, "ah_%02d", ambientLikeId);
+    sprintf(alId, "al_%02d", ambientLikeId);
 
     JsonObject at = arr.createNestedObject();
     at["device"]    = deviceName;
@@ -322,6 +331,41 @@ void uploadSensorReadings()
     rn["device"]    = deviceName;
     rn["sensor_id"] = rnId;
     rn["value"]     = serialized(String(sensors.rainfall, 1));
+  }
+
+  if (metSensorFound)
+  {
+    char wsId[8], wdId[8], noId[8], p1Id[8], p2Id[8];
+    sprintf(wsId, "ws_%02d", metSensorId);
+    sprintf(wdId, "wd_%02d", metSensorId);
+    sprintf(noId, "no_%02d", metSensorId);
+    sprintf(p1Id, "p1_%02d", metSensorId);
+    sprintf(p2Id, "p2_%02d", metSensorId);
+
+    JsonObject ws = arr.createNestedObject();
+    ws["device"]    = deviceName;
+    ws["sensor_id"] = wsId;
+    ws["value"]     = serialized(String(sensors.windSpeed, 2));
+
+    JsonObject wd = arr.createNestedObject();
+    wd["device"]    = deviceName;
+    wd["sensor_id"] = wdId;
+    wd["value"]     = sensors.windDir;
+
+    JsonObject no = arr.createNestedObject();
+    no["device"]    = deviceName;
+    no["sensor_id"] = noId;
+    no["value"]     = serialized(String(sensors.noise, 1));
+
+    JsonObject p1 = arr.createNestedObject();
+    p1["device"]    = deviceName;
+    p1["sensor_id"] = p1Id;
+    p1["value"]     = sensors.pm25;
+
+    JsonObject p2 = arr.createNestedObject();
+    p2["device"]    = deviceName;
+    p2["sensor_id"] = p2Id;
+    p2["value"]     = sensors.pm10;
   }
 
   String rec = isoNow();
