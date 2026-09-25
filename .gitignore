@@ -9,3 +9,6 @@ src/config_secrets.h
 
 # Claude Code project settings
 .claude
+
+# Personal session-handoff snapshot (regenerated each session, not shipped)
+HANDOFF.md

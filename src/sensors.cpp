@@ -117,16 +117,50 @@ void initSensors()
   if (!rainSensorFound)
     LOGF("Rain: not found (scanned IDs %d–%d)\n", RAIN_SCAN_START, RAIN_SCAN_END);
 
-  int found = (int)ecSensorFound + (int)wlSensorFound + (int)ambSensorFound + (int)rainSensorFound;
-  LOGF("Found: %d/4 sensors\n", found);
+  // Weather station (MET) — fixed ID, not a scan range (confirmed via bench test).
+  // Retried like EC's dual-register fallback above: a single attempt is
+  // vulnerable to transient bus contention from the four sensor scans that
+  // just ran immediately before it on the same shared RS485 bus.
+  metSensorFound = false;
+  modbus.begin(MET_SENSOR_ID, Serial1);
+  delay(50);
+  for (uint8_t attempt = 0; attempt < MET_DETECT_RETRIES && !metSensorFound; attempt++)
+  {
+    if (modbus.readHoldingRegisters(MET_REG_BASE, MET_REG_COUNT) == modbus.ku8MBSuccess)
+    {
+      metSensorId    = MET_SENSOR_ID;
+      metSensorFound = true;
+      LOGF("Weather station: ID %d\n", MET_SENSOR_ID);
+    }
+    else
+    {
+      delay(30);
+    }
+  }
+  if (!metSensorFound)
+    LOGF("Weather station: not found (ID %d, %d attempts)\n", MET_SENSOR_ID, MET_DETECT_RETRIES);
+
+  // Ambient and MET share sensors.ambTemp/ambHumid/ambLux (Ambient takes
+  // priority when both are present, see readSensors()) — this is expected to
+  // never happen in practice, so flag it loudly if it ever does, since MET's
+  // temp/humid/lux would otherwise be silently dropped with no other signal.
+  if (ambSensorFound && metSensorFound)
+  {
+    LOGLN("WARNING: both Ambient and MET sensors detected — MET's temp/humid/lux will be ignored (Ambient takes priority)");
+    logDeviceActivity("system", "WARNING: Ambient + MET sensors both present — MET temp/humid/lux ignored");
+  }
+
+  int found = (int)ecSensorFound + (int)wlSensorFound + (int)ambSensorFound + (int)rainSensorFound + (int)metSensorFound;
+  LOGF("Found: %d/5 sensors\n", found);
 
   String msg = "Sensor init: ";
   if (ecSensorFound)   msg += "EC(ID="   + String(ecSensorId)   + ") ";
   if (wlSensorFound)   msg += "WL(ID="   + String(wlSensorId)   + ") ";
   if (ambSensorFound)  msg += "AMB(ID="  + String(ambSensorId)  + ") ";
-  if (rainSensorFound) msg += "RAIN(ID=" + String(rainSensorId) + ")";
+  if (rainSensorFound) msg += "RAIN(ID=" + String(rainSensorId) + ") ";
+  if (metSensorFound)  msg += "MET(ID="  + String(metSensorId)  + ")";
   msg.trim();
-  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound)
+  if (!ecSensorFound && !wlSensorFound && !ambSensorFound && !rainSensorFound && !metSensorFound)
     msg += "none found";
   logDeviceActivity("system", msg.c_str());
 }
@@ -227,6 +261,11 @@ void readSensors()
   bool ecReadOk = false; // EC specifically produced a trustworthy value this tick —
                          // gates the average/MQTT/upload paths instead of the shared
                          // `success` flag above, which any other sensor can also set.
+  bool ambOk    = false; // Ambient specifically produced a trustworthy value this tick —
+                         // hoisted to function scope so the MET block below can check
+                         // this tick's actual read result instead of just "is an Ambient
+                         // sensor present at all" (which stays true through a transient
+                         // Ambient read failure and would silently skip MET's fallback).
   static unsigned long ecImplausibleSinceMs = 0; // 0 = not currently in a below-floor streak
 
   // --- EC Sensor ---
@@ -318,7 +357,6 @@ void readSensors()
     delay(10);
 
     uint16_t rawHumid = 0, rawTemp = 0, rawLux = 0;
-    bool ambOk = false;
 
     if (modbus.readHoldingRegisters(AMB_REG_HUMID, 2) == modbus.ku8MBSuccess)
     {
@@ -332,9 +370,10 @@ void readSensors()
 
     if (ambOk)
     {
-      sensors.ambHumid = rawHumid / 10.0f;
-      sensors.ambTemp  = rawTemp  / 10.0f;
-      sensors.ambLux   = (float)rawLux;
+      sensors.ambHumid    = rawHumid / 10.0f;
+      sensors.ambTemp     = rawTemp  / 10.0f;
+      sensors.ambLux      = (float)rawLux;
+      ambDataFromAmbient  = true;
       success = true;
     }
     delay(50);
@@ -357,13 +396,55 @@ void readSensors()
     checkRainDailyReset();
   }
 
+  // --- Weather Station (MET) ---
+  if (metSensorFound)
+  {
+    modbus.begin(metSensorId, Serial1);
+    delay(10);
+
+    if (modbus.readHoldingRegisters(MET_REG_BASE, MET_REG_COUNT) == modbus.ku8MBSuccess)
+    {
+      uint16_t windSpeedRaw  = modbus.getResponseBuffer(0); // 500
+      // reg 501 (wind force) and 502 (wind dir sector) intentionally unused — degrees preferred
+      uint16_t windDirRaw    = modbus.getResponseBuffer(3);  // 503
+      uint16_t humidRaw      = modbus.getResponseBuffer(4);  // 504
+      uint16_t tempRaw       = modbus.getResponseBuffer(5);  // 505
+      uint16_t noiseRaw      = modbus.getResponseBuffer(6);  // 506
+      uint16_t pm25Raw       = modbus.getResponseBuffer(7);  // 507
+      uint16_t pm10Raw       = modbus.getResponseBuffer(8);  // 508
+      // Registers 509-510 unused; 511 (lux) folded into this same block read
+      // (was a separate transaction) — see MET_REG_LUX_OFFSET in config.h.
+      uint16_t luxRaw        = modbus.getResponseBuffer(MET_REG_LUX_OFFSET); // 511
+
+      sensors.windSpeed = windSpeedRaw / 100.0f;
+      sensors.windDir   = (float)windDirRaw;
+      // Only Ambient OR MET populates the shared temp/humid/lux fields per boot
+      // (ambSensorFound and metSensorFound are mutually exclusive in practice).
+      // Gated on ambOk (this tick's actual Ambient read result), not just
+      // ambSensorFound (hardware present) — otherwise a transient Ambient
+      // Modbus failure would skip MET's fallback too and leave these stale.
+      if (!ambOk)
+      {
+        sensors.ambTemp    = tempRaw  / 10.0f;
+        sensors.ambHumid   = humidRaw / 10.0f;
+        sensors.ambLux     = (float)luxRaw;
+        ambDataFromAmbient = false;
+      }
+      sensors.noise = noiseRaw / 10.0f;
+      sensors.pm25  = (float)pm25Raw;
+      sensors.pm10  = (float)pm10Raw;
+      success = true;
+    }
+    delay(50);
+  }
+
   if (success)
     sensors.hasData = true;
 
   // --- Publish via MQTT (always publish if connected; sensor fields only when available) ---
   if (mqttClient.connected())
   {
-    StaticJsonDocument<1792> doc;   // +256 for the "sd" block
+    StaticJsonDocument<2048> doc;   // +256 for the "sd" block, +256 for the "met" block
 
     if (success)
     {
@@ -374,12 +455,21 @@ void readSensors()
       }
       if (wlSensorFound)
         doc["wl"] = sensors.wl;
-      if (ambSensorFound)
+      if (ambSensorFound || metSensorFound)
       {
         JsonObject ambObj  = doc.createNestedObject("amb");
         ambObj["temp"]     = serialized(String(sensors.ambTemp,  1));
         ambObj["humid"]    = serialized(String(sensors.ambHumid, 1));
         ambObj["lux"]      = serialized(String(sensors.ambLux,   0));
+      }
+      if (metSensorFound)
+      {
+        JsonObject metObj = doc.createNestedObject("met");
+        metObj["ws"]      = serialized(String(sensors.windSpeed, 2));
+        metObj["wd"]      = (int)sensors.windDir;
+        metObj["noise"]   = serialized(String(sensors.noise, 1));
+        metObj["pm25"]    = (int)sensors.pm25;
+        metObj["pm10"]    = (int)sensors.pm10;
       }
       if (rainSensorFound)
         doc["rain"] = serialized(String(sensors.rainfall, 1));
@@ -484,12 +574,17 @@ void readSensors()
     JsonObject sensorsObj = doc.createNestedObject("sensors");
     sensorsObj["ec"]   = ecSensorFound;
     sensorsObj["wl"]   = wlSensorFound;
-    sensorsObj["amb"]  = ambSensorFound;
+    // "amb" means "ambient-type data is present in this payload's amb{} object",
+    // which MET populates too when Ambient itself is absent (see the "amb"/"met"
+    // JSON blocks above) — mirror that here so a MET-only device doesn't report
+    // amb:false while amb{temp,humid,lux} is actively streaming from MET.
+    sensorsObj["amb"]  = ambSensorFound || metSensorFound;
     sensorsObj["rain"] = rainSensorFound;
+    sensorsObj["met"]  = metSensorFound;
 
     doc["rescan_seq"] = rescanSeq;
 
-    char buf[1792];
+    char buf[2048];
     serializeJson(doc, buf);
     mqttClient.publish(mqttTopicData.c_str(), buf);
   }
@@ -503,11 +598,25 @@ void readSensors()
       updateECAverage(sensors.ec);
   }
 
-  // Debug output when auto-dosing is active
+  // Debug output when auto-dosing is active — logs on a real event (state
+  // change, or the rolling sample window first filling) instead of a fixed
+  // 10s timer, which used to print unconditionally forever (~8,600 lines/day)
+  // regardless of whether anything was actually happening. A long fallback
+  // heartbeat is kept so a genuinely silent stretch still surfaces something,
+  // same philosophy as the loopTask stack log above.
   if (autoDosing && ecSensorFound)
   {
-    static unsigned long lastDebug = 0;
-    if (millis() - lastDebug >= 10000)
+    static bool            everLogged      = false;
+    static AutoDosingState lastLoggedState = AUTO_IDLE;
+    static bool            lastLoggedFull  = false;
+    static unsigned long   lastDebugMs     = 0;
+
+    bool full         = ecReadingCount >= EC_SAMPLES;
+    bool stateChanged = !everLogged || autoState != lastLoggedState;
+    bool justFilled   = full && !lastLoggedFull;
+    bool heartbeatDue = millis() - lastDebugMs >= 300000UL; // 5 min fallback
+
+    if (stateChanged || justFilled || heartbeatDue)
     {
       const char* stateNames[] = {
         "idle","startup_wait","sampling","pre_mix",
@@ -515,7 +624,10 @@ void readSensors()
       };
       LOGF("[Auto] state:%s EC:%.2f Avg:%.2f samples:%d/%d\n",
            stateNames[autoState], sensors.ec, ecAverage, ecReadingCount, EC_SAMPLES);
-      lastDebug = millis();
+      everLogged      = true;
+      lastLoggedState = autoState;
+      lastLoggedFull  = full;
+      lastDebugMs     = millis();
     }
   }
 }
@@ -682,6 +794,24 @@ void checkAutoDosing()
     enterState(AUTO_IDLE);
   }
 
+  // Self-clearing auto-recovery for ALARM_REASON_EC_DATA_UNAVAILABLE only —
+  // unlike EC_CEILING (an over-concentrated tank shouldn't silently resume)
+  // or SMART_CAL_FAILED (a broken calibration model needs a human decision),
+  // there's no danger in resuming here: SAMPLING re-evaluates EC fresh regardless,
+  // so once the probe is producing a full window of good reads again there's
+  // nothing to gain by waiting on a manual toggle. readSensors() keeps calling
+  // updateECAverage() while parked in AUTO_ALARM (its gate only excludes
+  // AUTO_STABILISING and an active dose), so ecReadingCount climbs normally
+  // the moment real reads resume.
+  if (autoState == AUTO_ALARM && lastAlarmReason == ALARM_REASON_EC_DATA_UNAVAILABLE &&
+      ecReadingCount >= EC_SAMPLES)
+  {
+    LOGLN("[Auto] EC probe producing good data again — resetting from ALARM");
+    logDeviceActivity("dosing", "Auto-dosing reset: EC probe producing good data again");
+    lastAlarmReason = ALARM_REASON_NONE;
+    enterState(AUTO_IDLE);
+  }
+
   switch (autoState)
   {
     // -------------------------------------------------
@@ -716,6 +846,28 @@ void checkAutoDosing()
     // -------------------------------------------------
     case AUTO_SAMPLING:
     {
+      // Stall guard: ecReadingCount only advances via updateECAverage() on a
+      // successful, plausible EC read (readSensors()'s ecReadOk gate) — the
+      // same dependency that can strand AUTO_STABILISING. Here there's no
+      // relay/dose in progress to resolve, so it's not unsafe to just keep
+      // waiting, but a probe that never produces usable data would otherwise
+      // sit here silently forever with zero visibility. Surface it instead.
+      //
+      // Exempt while R3 is actively refilling: a genuine plain-water refill
+      // can hold EC below EC_MIN_PLAUSIBLE for as long as EC_IMPLAUSIBLE_CONFIRM_MS,
+      // which is exactly what would otherwise starve ecReadingCount here. Uses
+      // live r3State directly (not refillActiveDuringDose, which is a dose-
+      // cycle-scoped accumulator not yet meaningful before SAMPLING decides
+      // to dose) — mirrors the refill exemption AUTO_STABILISING already has.
+      if (ecReadingCount < EC_SAMPLES && !r3State &&
+          now - autoStateEnteredAt >= SAMPLING_STALL_TIMEOUT_MS)
+      {
+        triggerAlarm("No usable EC data for " + String(SAMPLING_STALL_TIMEOUT_MS / 1000UL) +
+                     "s (" + String(ecReadingCount) + "/" + String(EC_SAMPLES) +
+                     " samples) — check EC probe/wiring", ALARM_REASON_EC_DATA_UNAVAILABLE);
+        return;
+      }
+
       // EC ceiling check — hold dosing; escalate to ALARM after sustained hold
       if (ecReadingCount >= EC_SAMPLES && ecAverage > ecTarget + EC_CEILING_MARGIN)
       {
@@ -1015,6 +1167,79 @@ void checkAutoDosing()
     case AUTO_STABILISING:
     {
       int skipTarget = autoMixing ? STABILISE_SKIP_MIX : STABILISE_SKIP_NO_MIX;
+
+      // Stall guard: a flaky EC probe (failed Modbus reads, or an implausible
+      // value still waiting out EC_IMPLAUSIBLE_CONFIRM_MS) can starve both
+      // stabiliseSkipCount and ecReadingCount below, since neither advances
+      // without a successful read — without this, that strands auto-dosing
+      // here until a manual reset. Route the timeout through the SAME
+      // ineffective-dose accounting as a real "no rise detected" result
+      // (rather than a free pass straight back to SAMPLING) so a probe that's
+      // just healthy enough to keep triggering doses, but unreliable enough to
+      // fail specifically during every stabilising window, still eventually
+      // reaches ALARM_REASON_NO_EC_RESPONSE instead of dosing forever with the
+      // safety net silently defeated.
+      if (now - autoStateEnteredAt >= STABILISE_TIMEOUT_MS)
+      {
+        LOGF("[Auto] STABILISING timed out after %lus (skip %d/%d, samples %d/%d) — check EC probe\n",
+             STABILISE_TIMEOUT_MS / 1000UL, stabiliseSkipCount, skipTarget,
+             ecReadingCount, EC_SAMPLES);
+
+        bool wlJumpDuringDose = wlSensorFound &&
+                                (sensors.wl - wlAtCycleStart) >= WL_JUMP_THRESHOLD_MM;
+        if (refillActiveDuringDose || wlJumpDuringDose)
+        {
+          LOGLN("[Auto] Timed-out response check skipped — refill active during dose cycle");
+          logDeviceActivity("dosing",
+            "Stabilising timed out, response check skipped — refill active during cycle");
+        }
+        else if (smartCalPhase)
+        {
+          calRetryCount++;
+          LOGF("[Smart] Calibration had no EC data — retry %d/%d\n", calRetryCount, SMART_CAL_MAX_RETRIES);
+          if (calRetryCount >= SMART_CAL_MAX_RETRIES)
+          {
+            triggerAlarm("Smart calibration failed after " + String(calRetryCount) +
+                         " attempts (no EC data)", ALARM_REASON_SMART_CAL_FAILED);
+            return;
+          }
+          smartCalPhase = false;
+          logDeviceActivity("dosing", "Stabilising timed out during smart-cal — no EC data, retrying");
+        }
+        else
+        {
+          if (consecutiveIneffectiveDoses == 0)
+            ecAtStreakStart = preDoseEC;
+          consecutiveIneffectiveDoses++;
+          totalIneffectiveDoses++;
+          LOGF("[Auto] Ineffective dose (no EC data) #%d (total %d)\n",
+               consecutiveIneffectiveDoses, totalIneffectiveDoses);
+          logDeviceActivity("dosing", ("Stabilising timed out — no EC data to confirm dose #" +
+                            String(dosesToday) + " (" + String(consecutiveIneffectiveDoses) +
+                            " consecutive)").c_str());
+
+          if (totalIneffectiveDoses >= MAX_TOTAL_INEFFECTIVE_DOSES)
+          {
+            triggerAlarm("No EC response after " + String(totalIneffectiveDoses) +
+                         " doses (total, incl. missing-data cycles)", ALARM_REASON_NO_EC_RESPONSE);
+            return;
+          }
+          if (consecutiveIneffectiveDoses >= MAX_INEFFECTIVE_DOSES)
+          {
+            // No trustworthy ecAverage this cycle — can't evaluate the
+            // cumulative-streak grace period real ineffective doses get
+            // (sensors.cpp's streakRise check below), so alarm straight away.
+            triggerAlarm("No EC response after " + String(MAX_INEFFECTIVE_DOSES) +
+                         " doses (missing EC data)", ALARM_REASON_NO_EC_RESPONSE);
+            return;
+          }
+        }
+
+        enterState(AUTO_SAMPLING);
+        LOGLN("[Auto] Back to SAMPLING (stabilising timed out)");
+        break;
+      }
+
       if (stabiliseSkipCount < skipTarget)
         return; // readings are being skipped in readSensors via the guard
 

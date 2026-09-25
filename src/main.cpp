@@ -62,11 +62,14 @@ uint8_t ecSensorId   = 0;
 uint8_t wlSensorId   = 0;
 uint8_t ambSensorId  = 0;
 uint8_t rainSensorId = 0;
+uint8_t metSensorId  = 0;
 int     lastRainResetDay = -1;
 bool ecSensorFound   = false;
 bool wlSensorFound   = false;
 bool ambSensorFound  = false;
 bool rainSensorFound = false;
+bool metSensorFound  = false;
+bool ambDataFromAmbient = true; // matches ambSensorFound-based fallback before any read completes
 SensorData sensors;
 
 bool relayStates[2] = {false, false};
@@ -889,17 +892,24 @@ void loop()
 
   // --- loopTask stack + heap high-water (Phase 5: the v1.2.5 crash class —
   //     SdFat + ArduinoJson + mbedTLS all run on this task). Tracks the lowest
-  //     free stack seen so far; logs only when it drops or every 60s. Must run
-  //     before the offline early-return below — a full WiFi+cellular outage is
-  //     exactly the condition this is meant to catch (D3 fix: used to sit after
-  //     the return and go silent for the whole outage). ---
+  //     free stack seen so far; logs immediately on any NEW low-water mark
+  //     (must stay instant — a stack overflow crash reboots before the next
+  //     heartbeat, destroying these RAM-only statics, so a delayed "heartbeat
+  //     only" log would silently lose the one value that mattered most right
+  //     before a real crash) plus a steady heartbeat, widened from 60s to 5min
+  //     to cut console volume once stack usage has settled post-boot (most of
+  //     the earlier noise was the 60s heartbeat repeating forever, not the
+  //     drop events, which taper off once every code path has run once).
+  //     Must run before the offline early-return below — a full WiFi+cellular
+  //     outage is exactly the condition this is meant to catch (D3 fix: used
+  //     to sit after the return and go silent for the whole outage). ---
   {
     static unsigned long lastStackLog = 0;
     static uint32_t stackMinEver = 0xFFFFFFFF;
     uint32_t freeStack = (uint32_t)uxTaskGetStackHighWaterMark(NULL); // bytes (ESP-IDF)
     bool dropped = freeStack < stackMinEver;
     if (dropped) stackMinEver = freeStack;
-    if (dropped || now - lastStackLog >= 60000UL)
+    if (dropped || now - lastStackLog >= 300000UL)
     {
       LOGF("[stack] loopTask free now %lu B, min-ever %lu B (of ~20480) | heap %lu B\n",
            (unsigned long)freeStack, (unsigned long)stackMinEver,

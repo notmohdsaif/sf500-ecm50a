@@ -66,6 +66,20 @@
 #define RAIN_SCAN_START 30 // Rain sensor (single fixed ID)
 #define RAIN_SCAN_END 30
 #define RAIN_REG_TIPS 0    // Holding register: rainfall in 0.1mm increments
+#define MET_SENSOR_ID 35    // Weather station — fixed ID, confirmed via bench test (not a scan range)
+#define MET_DETECT_RETRIES 3 // boot-time detection attempts — single-shot was vulnerable to bus
+                              // contention from the EC/WL/Ambient/Rain scans running immediately
+                              // before it on the same shared RS485 bus
+#define MET_REG_BASE 500    // Block read start: wind speed/force/dir(x2)/humidity/temp/noise/pm2.5/pm10
+#define MET_REG_COUNT 12    // Registers 500-511 inclusive — widened from 9 (500-508) to pull the lux
+                             // register (511) into this same transaction instead of a second one
+#define MET_REG_LUX_OFFSET 11 // index of register 511 within the MET_REG_COUNT block read above
+                               // (low 16 bits of the 32-bit precise Lux value, raw = lux, no scaling —
+                               // coarser reg 512's x100-Lux single-register reading was too low-
+                               // resolution at indoor light levels). NOTE: only the low word is read —
+                               // the high word's register address isn't documented anywhere in this
+                               // codebase, so values above 65535 lux (full sun, common outdoors) still
+                               // wrap. Needs the weather station's Modbus register map to fix properly.
 
 // Timing Constants (milliseconds)
 #define SENSOR_READ_INTERVAL 1000UL
@@ -126,12 +140,38 @@
 #define POST_DOSE_DELAY_MIX 60000UL
 #define STABILISE_SKIP_NO_MIX 15
 #define STABILISE_SKIP_MIX 10
+// Hard bound on time spent in AUTO_STABILISING. Both the skip counter and the
+// post-skip sample count only advance on a successful, plausible EC read
+// (see readSensors()'s ecReadOk gate) — a flaky probe (failed Modbus reads or
+// a sustained implausible value) can stall both indefinitely with no other
+// exit condition. Past this many ms, give up on the response check for this
+// cycle and resume SAMPLING rather than hanging until a manual reset.
+// 180s. Bench-validated 2026-09-25 at 10 min (fired correctly, folded into the
+// ineffective-dose counters as designed), then brought down for fast recovery —
+// but NOT down to 90s: EC_IMPLAUSIBLE_CONFIRM_MS (120s below) is the window a
+// genuine plain-water refill needs before its below-floor reading is trusted
+// as real. A timeout at or under 120s can fire on a real refill before that
+// window closes — the exact false-alarm pattern this project has already been
+// burned by once (concurrent refill+dosing, see project memory). 180s clears
+// that floor with real margin while still recovering ~3x faster than the
+// bench-validated 10 min.
+#define STABILISE_TIMEOUT_MS (180UL * 1000UL)
+// Bound on time AUTO_SAMPLING can sit without a single full window of usable EC
+// data (ecReadingCount stuck below EC_SAMPLES). No relay/dose is pending here,
+// so it's not unsafe to keep waiting — this exists purely so a probe that never
+// produces usable reads gets surfaced instead of idling silently forever.
+// 180s — see STABILISE_TIMEOUT_MS above for why this must clear
+// EC_IMPLAUSIBLE_CONFIRM_MS's 120s floor rather than sit at/under it. A
+// healthy probe fills the window in ~31s (bench-validated), so this still
+// notifies far faster than the original 20 min while not false-triggering on
+// a real refill's confirm-as-real cycle.
+#define SAMPLING_STALL_TIMEOUT_MS (180UL * 1000UL)
 
 // Schedules
 #define MAX_SCHEDULES 100
 
 // Firmware version — must match GitHub release tag (without 'v' prefix)
-#define FIRMWARE_VERSION "1.2.8"
+#define FIRMWARE_VERSION "1.2.9"
 
 // GitHub OTA repository
 #define GITHUB_USER "notmohdsaif"

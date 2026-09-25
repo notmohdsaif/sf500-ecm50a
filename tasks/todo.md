@@ -1,88 +1,118 @@
-# Offline-autonomy Phase 2d — fix D1/D2/D3, bench-validate, code-review
+# Auto-dosing stall fix + console noise cleanup + MET fixes — bench-validated, NOT SHIPPED
 
-Branch `offline-autonomy` (tip `64d2489`, 42 commits over v1.2.6 `main`), worktree
-`.claude/worktrees/offline-autonomy`. Not pushed. Full background/history in project memory
-(`project_offline_autonomy.md`) — this file covers this session's checklist + result per
-CLAUDE.md's Task Management convention.
+Branch `dev`, 4 local commits ahead of `origin/dev` (`f0a282f` tip, over `ec21d19`/v1.2.9).
+Nothing pushed, no PR, no tag. Full narrative in project memory
+(`project_auto_dosing_stall_fix_2026_09.md`) — this file is the per-session checklist +
+result per CLAUDE.md's Task Management convention.
+
+## Original report
+
+`sf500_1078bc` (farm unit, known flaky/uncalibrated EC probe — see
+`project_ec_probe_calibration_overdue.md`) repeatedly got stuck in `AUTO_STABILISING`,
+recoverable only via a manual dashboard reset. Also asked to quiet the `[stack] loopTask
+free...` console line, and asked separately why `wl_sensor_missing`/`ec_sensor_missing`
+alarms kept re-firing after ack even for unconnected sensors.
 
 ## Checklist
 
-- [x] D1 — gate the offline captive portal behind sustained downtime (180s) + a completed
-      radio power-cycle, instead of opening almost immediately (~1s). `main.cpp`.
-- [x] D2 — replace `isoFromEpochUtc()` (`gmtime_r`) with `isoFromEpoch()` (`localtime_r`,
-      mirrors `isoNow()`). `cloud.cpp`/`cloud.h`/`backfill.cpp`.
-- [x] D3 — move the `[stack]` high-water log above the offline early-return so it doesn't go
-      silent for the whole duration of an outage. `main.cpp`.
-- [x] Build (`pio run -e esp32-s3-devkitm-1`) + host tests (`pio test -e native`, 16/16).
-- [x] Bench-test on real hardware (`sf500_107888`, tethered USB, 2026-09-21):
-  - [x] Multi-transport handoff (WiFi down, cellular rescues) — clean, no premature portal.
-  - [x] Found + fixed a 4th bug live: WiFi-ladder state (`wifiDownSince` etc.) wasn't reset on
-        a successful cellular handoff, so a later cellular->WiFi drop resumed against a stale
-        timer and could reopen the D1 bug through a transport bounce instead of a plain outage.
-        Fixed via `clearWifiReconnect()` in `tryCellularFallback()` on success.
-  - [x] No-cellular last-resort test (antenna pulled) — portal correctly opened at 216s down,
-        proving the gate isn't "never opens".
-  - [x] Timely-recovery test (antenna still out) — clean reassociation, zero portal opens.
-  - [x] D3 confirmed live — `[stack]` kept logging throughout every outage window.
-  - [ ] D2 not live-repro'd — this bench unit's boot sequence structurally can't expose the
-        bug through its only two loggable offline events (both fire from `bringOnline()`,
-        which only runs post-sync). Confidence is code-level (see next item), not bench-proven.
-- [x] `/code-review high` pass on the full diff. 10 findings, all verified individually (not
-      taken on faith):
-  - [x] **[CRITICAL]** `seedClockFromStore()` (`persist.cpp`) restored the epoch via
-        `settimeofday()` but never set TZ — on a cold offline boot (no NTP/cellular yet),
-        `localtime_r()` renders unshifted UTC digits while `isoNow()`/`isoFromEpoch()` still
-        tag them `+08:00`, reproducing D2's exact skew through a path the D2 fix never
-        touched. Verified against the actual ESP32 Arduino core source
-        (`esp32-hal-time.c`) that `configTime()` sets TZ via `setenv`, not a shifted epoch —
-        this overturned my own earlier assumption about how the mechanism worked. Fixed by
-        adding the same two lines (`setenv("TZ","UTC-8",1); tzset();`) `cellular.cpp`'s NITZ
-        path already uses for the identical problem. Not live-repro'd (see above) — confidence
-        is source-verified + exact-pattern-match, not bench-proven.
-  - [x] Portal's last-resort gate could be starved indefinitely by a flapping AP (any momentary
-        `WL_CONNECTED` blip reset `wifiDownSince`/`wifiHadCycle` before the 120s cycle or 180s
-        gate ever completed) — fixed with a 15s stability debounce before declaring the outage
-        over, mirroring the existing `wifiUpSince` cellular up-switch pattern. Not live-tested
-        (would need a real flapping AP).
-  - [x] `clearWifiReconnect()` unconditionally logged "[WiFi] Re-associated: <ip>" even when
-        called from a successful cellular handoff (where WiFi never reconnected, IP is
-        0.0.0.0) — moved the log to the one call site where it's actually true.
-  - [x] `shouldOpenPortalOffline()` paid an NVS (flash) read on every loop (~100/s) even when
-        cellular was active or WiFi was up, i.e. in the common case — short-circuited before
-        the read.
-  - [x] Stale comment in `backfill.cpp` still named the pre-rename `isoFromEpochUtc()`.
-  - [x] Redundant `wifiHadCycle` bool — removed, derived inline as `wifiLastCycle !=
-        wifiDownSince` (same two variables already tracked it; a future edit to one without
-        the other could have silently desynced them).
-  - [x] Corrected a `cloud.cpp` comment that had the wrong theory of why `configTime()` makes
-        `isoNow()` correct (my TZ misunderstanding, see above) — now describes the real
-        mechanism and cross-references `seedClockFromStore()`.
-  - [ ] Not fixed, logged as future work, out of scope tonight: 5 pre-existing call sites
-        elsewhere (`mqtt_handler.cpp`, `sensors.cpp`, `cloud.cpp`'s `updateDeviceStatus`) hand-roll
-        the same `localtime_r`+`sprintf` block `isoFromEpoch()` now canonicalizes — could be
-        collapsed onto it, but touches currently-working, untested-tonight code paths.
-  - [ ] Not fixed, noted only: the transport-bounce fix (`clearWifiReconnect()` in
-        `tryCellularFallback()`) is a manually-placed call at the one current call site, not
-        structurally guaranteed — a future second `activeTransport = TRANSPORT_CELLULAR` site
-        would need the same call added by hand.
-- [x] Rebuilt + re-ran host tests after every fix batch — still SUCCESS / 16/16 throughout.
-- [x] Diff still uncommitted by design — holding for explicit go-ahead (this branch's Phase 3
-      — version bump, PR, staged OTA — was already deliberately held pending user sign-off,
-      see project memory / [[feedback_check_deferred_conditions_before_release]]).
+- [x] Root-caused the stall: `ecReadingCount`/`stabiliseSkipCount` only advance on a
+      successful, plausible EC read (`ecReadOk` gate in `readSensors()`) — a probe that never
+      produces a plausible reading stalls both counters with no timeout anywhere in the path.
+- [x] Fixed `AUTO_STABILISING`: folded a timeout into the *existing* ineffective-dose
+      accounting (not a bare bypass — first attempt at this was a critical regression caught
+      by code review, see below) — same escalation to `ALARM_REASON_NO_EC_RESPONSE` as a real
+      failed dose response.
+- [x] Added `AUTO_SAMPLING` stall guard (new, beyond the literal bug report — user
+      pushed back on scope once, then confirmed keep-it after clarifying the actual
+      requirement is "recover fast," not "add features"): new self-clearing
+      `ALARM_REASON_EC_DATA_UNAVAILABLE`, exempted while `r3State` (refill) is active,
+      mirroring `AUTO_STABILISING`'s existing refill exemption.
+- [x] Timeout tuning, iterated live with user: 600s (bench-validated) → 90s (user's explicit
+      urgency call) → 180s (2nd code review caught 90s violating the pre-existing
+      `EC_IMPLAUSIBLE_CONFIRM_MS` = 120s floor — a 90s alarm could fire *during* a real
+      legitimate dilution/refill event, before the system's own grace window even closes).
+      Final: `STABILISE_TIMEOUT_MS` = `SAMPLING_STALL_TIMEOUT_MS` = 180000UL.
+- [x] Console noise: `[stack]` heartbeat 60s → 300s (kept the instant-log-on-new-low-water-
+      mark trigger — removing it was my own regression, caught by 1st code review, since it
+      could lose crash evidence right before an actual crash). Auto-dosing debug heartbeat
+      rewritten from a fixed 10s timer to log only on state change / sample-window-fill / 5min
+      fallback — this was the actual bulk of the console noise.
+- [x] `wl_sensor_missing`/`ec_sensor_missing` alarm design: confirmed by user as
+      intentional (no opt-out for unconnected sensors) — left as-is. The *frequency* bug
+      (re-firing on nearly every page load, wiping acks) was a Dashboard-side race between
+      MQTT `sensorStatus` and an async Supabase `sensorPresence` fetch — separate repo.
+- [x] MET sensor fixes bundled in from a prior local commit's review: register read merged
+      into one Modbus transaction (`MET_REG_COUNT` 9→12, `MET_REG_LUX_OFFSET`), boot detection
+      wrapped in a `MET_DETECT_RETRIES` (3x) loop, new `ambDataFromAmbient` global fixes a
+      mislabeling bug in `cloud.cpp`'s upload tagging (was using boot-time presence
+      `ambSensorFound` instead of per-tick actual source).
+- [x] Two full `/code-review` passes, all correctness findings fixed (STABILISING bypass
+      regression, sub-120s false-alarm conflict, alarm message math bug — `/60000UL` was
+      integer-dividing to a constant `1`, MET/Ambient mislabeling). Style/architecture findings
+      deliberately deferred (see Known limitations).
+- [x] Build clean (`pio run -e esp32-s3-devkitm-1`) after every change.
+- [x] Bench-tested on `sf500_3a387c` (office unit — `sf500_1078bc` is farm-deployed, no
+      physical access, and this codebase has no per-device OTA targeting so any release
+      reaches the whole fleet):
+  - [x] `AUTO_SAMPLING` stall guard + self-clearing auto-recovery — confirmed via live serial
+        capture and Supabase `activity_log`, tested at the 90s value.
+  - [x] `AUTO_STABILISING` timeout folded into ineffective-dose accounting, including its
+        chaining into the `SAMPLING` guard — confirmed at the 600s and 90s values.
+  - [x] Flashed the final `f0a282f` build (180s + refill exemption + MET/ambient fixes) fresh
+        — clean `POWERON` boot, WiFi/MQTT/NTP/registration all fine, OTA version-guard
+        correctly refused to downgrade against fleet's `v1.2.8`, MET retry loop confirmed live
+        (`"Weather station: not found (ID 35, 3 attempts)"`), state machine ran
+        `STARTUP_WAIT → SAMPLING` cleanly with 30/30 samples.
+- [x] Confirmed `FIRMWARE_VERSION` = "1.2.9" (not "1.2.10" — 1.2.9 itself was never tagged
+      or released, only ever committed locally before tonight).
+
+## Known limitations / concerns — circle back before or shortly after shipping
+
+- [ ] **The `r3State` refill exemption on `AUTO_SAMPLING` has never executed under a real
+      refill event** — every bench test tonight had the plug off throughout, so the alarm
+      firing was tested, but the exemption suppressing it during an actual refill was not.
+      Bounded risk: it's a boolean gate on the same `r3State` flag already used everywhere
+      else for relay control, not new instrumentation. Worst case if wrong: the guard simply
+      doesn't help during a real refill and the alarm fires anyway — not worse than today's
+      pre-fix behavior, just doesn't add the intended grace. Cannot cause a *new* failure mode.
+- [ ] **The exact 180s timeout values are not themselves stress-tested in real time** — only
+      90s and 600s were empirically run to completion. 180s is the same proven logic at a
+      different constant; low risk, but not literally bench-timed.
+- [ ] **MET/weather-station fixes (register merge, retry loop) unverified on real hardware** —
+      this bench unit has no MET sensor. Narrow blast radius: this MET code has never shipped
+      to the fleet before (still local-only prior to tonight per `project_weather_station_met_sensor.md`),
+      so this isn't a new regression for any currently-deployed device — only matters once a
+      MET-equipped unit gets this release.
+- [ ] **Known, unfixed: MET lux 32-bit truncation.** Register 511 is documented as only the
+      low 16 bits of a 32-bit lux value; the high-word register address is undocumented
+      anywhere in this codebase. Flagged, not guessed at — needs the sensor's actual datasheet
+      or a bench sweep of adjacent registers.
+- [ ] **Deferred style/architecture findings from the 2nd code review** (not correctness bugs,
+      explicitly out of scope per user's own scope-discipline feedback this session): MET
+      register constants could be named better, MET polling cadence duplicates the main sensor
+      loop's, the ineffective-dose accounting logic is now duplicated between the `DOSING`
+      failure path and the new `STABILISING` timeout fold rather than shared, MET/Ambient
+      field-sharing (`sensors.ambTemp` etc.) is a slightly awkward shared-field architecture
+      that works but isn't obviously the cleanest shape long-term.
+- [ ] **No per-device OTA targeting exists in this codebase at all** (`ota.cpp` pulls
+      `releases/latest` unconditionally for the whole fleet) — any tag reaches every device,
+      not just the one that was actually reported stuck. Pre-existing constraint, not new
+      tonight, but directly shapes how cautiously this specific release should be rolled out.
+- [ ] **Dashboard-side `wl_sensor_missing` frequency fix is a separate repo/deploy** —
+      `use-alarms.ts`'s `dataReady` gating now also waits on `waterLevelSensorsReady`;
+      typecheck (`tsc --noEmit`) and `npm run build` both clean, but not manually re-verified
+      live in a browser this session.
+- [ ] **Nothing pushed** — still 4 local commits on `dev`, `origin/dev` has none of this.
 
 ## Review / summary
 
-D1 and D3 are now bench-proven on real hardware, including a bug (#4, the transport-bounce
-stale timer) that only surfaced through live testing — code review alone would very likely
-have missed it, and bench testing alone would have missed the TZ bug the review caught. Doing
-both was the right call.
-
-D2's fix is sound in its own right, but the code review revealed the field-observed 8h skew's
-real root cause is one level deeper (`seedClockFromStore()` never establishing TZ) — now also
-fixed, verified against the actual framework source, but not exercised on real hardware tonight
-because this specific bench unit's boot sequence can't reach the buggy window through its only
-two loggable offline events. That's the one item in this diff resting on code-level confidence
-rather than a live repro.
-
-Net: 6 files changed (`backfill.cpp`, `cloud.cpp`, `cloud.h`, `config.h`, `main.cpp`,
-`persist.cpp`), build clean, 16/16 host tests, still uncommitted pending user go-ahead.
+Root cause (unbounded stall on a probe that never produces a plausible EC read) is fixed at
+both places it can occur (`STABILISING` and `SAMPLING`), with self-clearing recovery so no
+manual dashboard reset is needed for this specific fault class going forward. Two rounds of
+code review closed every correctness-level finding, including two regressions I introduced
+myself along the way (the STABILISING bypass, and briefly dropping the stack log's crash-
+evidence trigger) — both caught before shipping, not after. The remaining open items above
+are genuine gaps, not hedging: the refill-exemption path is analytically bounded-safe but
+not live-proven, and MET hardware fixes have zero bench coverage since no MET-equipped unit
+was available tonight. Held at user's request pending a decision on timing rather than
+pushed immediately.

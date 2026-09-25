@@ -40,14 +40,19 @@ struct NetItem
 
 struct SensorData
 {
-  float ec       = 0.0f;
-  float temp     = 0.0f;
-  float wl       = 0.0f;
-  float ambHumid = 0.0f;
-  float ambTemp  = 0.0f;
-  float ambLux   = 0.0f;
-  float rainfall = 0.0f; // mm (rain bucket: raw register * 0.1)
-  bool  hasData  = false;
+  float ec        = 0.0f;
+  float temp      = 0.0f;
+  float wl        = 0.0f;
+  float ambHumid  = 0.0f; // shared by the old Ambient sensor and the new MET sensor's humidity
+  float ambTemp   = 0.0f; // shared by the old Ambient sensor and the new MET sensor's temperature
+  float ambLux    = 0.0f; // shared by the old Ambient sensor and the new MET sensor's lux
+  float rainfall  = 0.0f; // mm (rain bucket: raw register * 0.1)
+  float windSpeed = 0.0f; // m/s (MET sensor)
+  float windDir   = 0.0f; // degrees, 0=N clockwise (MET sensor)
+  float noise     = 0.0f; // dB (MET sensor)
+  float pm25      = 0.0f; // ug/m3 (MET sensor)
+  float pm10      = 0.0f; // ug/m3 (MET sensor)
+  bool  hasData   = false;
 };
 
 struct Schedule
@@ -137,6 +142,14 @@ extern bool       ecSensorFound;
 extern bool       wlSensorFound;
 extern bool       ambSensorFound;
 extern bool       rainSensorFound;
+extern uint8_t    metSensorId;
+extern bool       metSensorFound;
+// Which sensor actually wrote the shared sensors.ambTemp/ambHumid/ambLux
+// fields on the most recent successful read — distinct from ambSensorFound
+// (boot-time presence only). uploadSensorReadings() (cloud.cpp) needs this,
+// not presence, to tag readings under the right sensor_id in the rare case
+// both Ambient and MET are present and Ambient's read fails on a given tick.
+extern bool       ambDataFromAmbient;
 extern SensorData sensors;
 
 // Relay state
@@ -210,7 +223,11 @@ enum AutoDosingAlarmReason {
   ALARM_REASON_NONE,
   ALARM_REASON_NO_EC_RESPONSE,
   ALARM_REASON_EC_CEILING,
-  ALARM_REASON_SMART_CAL_FAILED
+  ALARM_REASON_SMART_CAL_FAILED,
+  ALARM_REASON_EC_DATA_UNAVAILABLE // AUTO_SAMPLING stall guard — probe present but not
+                                    // producing usable reads; refill can't fix this, so
+                                    // intentionally excluded from the refill auto-recovery
+                                    // checks below (those only match ALARM_REASON_NO_EC_RESPONSE)
 };
 extern AutoDosingAlarmReason lastAlarmReason;
 extern unsigned long   autoStateEnteredAt;
