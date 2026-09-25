@@ -144,6 +144,12 @@ extern bool       ambSensorFound;
 extern bool       rainSensorFound;
 extern uint8_t    metSensorId;
 extern bool       metSensorFound;
+// Which sensor actually wrote the shared sensors.ambTemp/ambHumid/ambLux
+// fields on the most recent successful read — distinct from ambSensorFound
+// (boot-time presence only). uploadSensorReadings() (cloud.cpp) needs this,
+// not presence, to tag readings under the right sensor_id in the rare case
+// both Ambient and MET are present and Ambient's read fails on a given tick.
+extern bool       ambDataFromAmbient;
 extern SensorData sensors;
 
 // Relay state

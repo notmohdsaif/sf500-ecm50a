@@ -370,9 +370,10 @@ void readSensors()
 
     if (ambOk)
     {
-      sensors.ambHumid = rawHumid / 10.0f;
-      sensors.ambTemp  = rawTemp  / 10.0f;
-      sensors.ambLux   = (float)rawLux;
+      sensors.ambHumid    = rawHumid / 10.0f;
+      sensors.ambTemp     = rawTemp  / 10.0f;
+      sensors.ambLux      = (float)rawLux;
+      ambDataFromAmbient  = true;
       success = true;
     }
     delay(50);
@@ -424,9 +425,10 @@ void readSensors()
       // Modbus failure would skip MET's fallback too and leave these stale.
       if (!ambOk)
       {
-        sensors.ambTemp  = tempRaw  / 10.0f;
-        sensors.ambHumid = humidRaw / 10.0f;
-        sensors.ambLux   = (float)luxRaw;
+        sensors.ambTemp    = tempRaw  / 10.0f;
+        sensors.ambHumid   = humidRaw / 10.0f;
+        sensors.ambLux     = (float)luxRaw;
+        ambDataFromAmbient = false;
       }
       sensors.noise = noiseRaw / 10.0f;
       sensors.pm25  = (float)pm25Raw;
@@ -596,11 +598,25 @@ void readSensors()
       updateECAverage(sensors.ec);
   }
 
-  // Debug output when auto-dosing is active
+  // Debug output when auto-dosing is active — logs on a real event (state
+  // change, or the rolling sample window first filling) instead of a fixed
+  // 10s timer, which used to print unconditionally forever (~8,600 lines/day)
+  // regardless of whether anything was actually happening. A long fallback
+  // heartbeat is kept so a genuinely silent stretch still surfaces something,
+  // same philosophy as the loopTask stack log above.
   if (autoDosing && ecSensorFound)
   {
-    static unsigned long lastDebug = 0;
-    if (millis() - lastDebug >= 10000)
+    static bool            everLogged      = false;
+    static AutoDosingState lastLoggedState = AUTO_IDLE;
+    static bool            lastLoggedFull  = false;
+    static unsigned long   lastDebugMs     = 0;
+
+    bool full         = ecReadingCount >= EC_SAMPLES;
+    bool stateChanged = !everLogged || autoState != lastLoggedState;
+    bool justFilled   = full && !lastLoggedFull;
+    bool heartbeatDue = millis() - lastDebugMs >= 300000UL; // 5 min fallback
+
+    if (stateChanged || justFilled || heartbeatDue)
     {
       const char* stateNames[] = {
         "idle","startup_wait","sampling","pre_mix",
@@ -608,7 +624,10 @@ void readSensors()
       };
       LOGF("[Auto] state:%s EC:%.2f Avg:%.2f samples:%d/%d\n",
            stateNames[autoState], sensors.ec, ecAverage, ecReadingCount, EC_SAMPLES);
-      lastDebug = millis();
+      everLogged      = true;
+      lastLoggedState = autoState;
+      lastLoggedFull  = full;
+      lastDebugMs     = millis();
     }
   }
 }
@@ -775,6 +794,24 @@ void checkAutoDosing()
     enterState(AUTO_IDLE);
   }
 
+  // Self-clearing auto-recovery for ALARM_REASON_EC_DATA_UNAVAILABLE only —
+  // unlike EC_CEILING (an over-concentrated tank shouldn't silently resume)
+  // or SMART_CAL_FAILED (a broken calibration model needs a human decision),
+  // there's no danger in resuming here: SAMPLING re-evaluates EC fresh regardless,
+  // so once the probe is producing a full window of good reads again there's
+  // nothing to gain by waiting on a manual toggle. readSensors() keeps calling
+  // updateECAverage() while parked in AUTO_ALARM (its gate only excludes
+  // AUTO_STABILISING and an active dose), so ecReadingCount climbs normally
+  // the moment real reads resume.
+  if (autoState == AUTO_ALARM && lastAlarmReason == ALARM_REASON_EC_DATA_UNAVAILABLE &&
+      ecReadingCount >= EC_SAMPLES)
+  {
+    LOGLN("[Auto] EC probe producing good data again — resetting from ALARM");
+    logDeviceActivity("dosing", "Auto-dosing reset: EC probe producing good data again");
+    lastAlarmReason = ALARM_REASON_NONE;
+    enterState(AUTO_IDLE);
+  }
+
   switch (autoState)
   {
     // -------------------------------------------------
@@ -815,10 +852,18 @@ void checkAutoDosing()
       // relay/dose in progress to resolve, so it's not unsafe to just keep
       // waiting, but a probe that never produces usable data would otherwise
       // sit here silently forever with zero visibility. Surface it instead.
-      if (ecReadingCount < EC_SAMPLES && now - autoStateEnteredAt >= SAMPLING_STALL_TIMEOUT_MS)
+      //
+      // Exempt while R3 is actively refilling: a genuine plain-water refill
+      // can hold EC below EC_MIN_PLAUSIBLE for as long as EC_IMPLAUSIBLE_CONFIRM_MS,
+      // which is exactly what would otherwise starve ecReadingCount here. Uses
+      // live r3State directly (not refillActiveDuringDose, which is a dose-
+      // cycle-scoped accumulator not yet meaningful before SAMPLING decides
+      // to dose) — mirrors the refill exemption AUTO_STABILISING already has.
+      if (ecReadingCount < EC_SAMPLES && !r3State &&
+          now - autoStateEnteredAt >= SAMPLING_STALL_TIMEOUT_MS)
       {
-        triggerAlarm("No usable EC data for " + String(SAMPLING_STALL_TIMEOUT_MS / 60000UL) +
-                     "+ min (" + String(ecReadingCount) + "/" + String(EC_SAMPLES) +
+        triggerAlarm("No usable EC data for " + String(SAMPLING_STALL_TIMEOUT_MS / 1000UL) +
+                     "s (" + String(ecReadingCount) + "/" + String(EC_SAMPLES) +
                      " samples) — check EC probe/wiring", ALARM_REASON_EC_DATA_UNAVAILABLE);
         return;
       }

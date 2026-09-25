@@ -146,12 +146,26 @@
 // a sustained implausible value) can stall both indefinitely with no other
 // exit condition. Past this many ms, give up on the response check for this
 // cycle and resume SAMPLING rather than hanging until a manual reset.
-#define STABILISE_TIMEOUT_MS (600UL * 1000UL)
+// 180s. Bench-validated 2026-09-25 at 10 min (fired correctly, folded into the
+// ineffective-dose counters as designed), then brought down for fast recovery —
+// but NOT down to 90s: EC_IMPLAUSIBLE_CONFIRM_MS (120s below) is the window a
+// genuine plain-water refill needs before its below-floor reading is trusted
+// as real. A timeout at or under 120s can fire on a real refill before that
+// window closes — the exact false-alarm pattern this project has already been
+// burned by once (concurrent refill+dosing, see project memory). 180s clears
+// that floor with real margin while still recovering ~3x faster than the
+// bench-validated 10 min.
+#define STABILISE_TIMEOUT_MS (180UL * 1000UL)
 // Bound on time AUTO_SAMPLING can sit without a single full window of usable EC
 // data (ecReadingCount stuck below EC_SAMPLES). No relay/dose is pending here,
 // so it's not unsafe to keep waiting — this exists purely so a probe that never
 // produces usable reads gets surfaced instead of idling silently forever.
-#define SAMPLING_STALL_TIMEOUT_MS (1200UL * 1000UL)
+// 180s — see STABILISE_TIMEOUT_MS above for why this must clear
+// EC_IMPLAUSIBLE_CONFIRM_MS's 120s floor rather than sit at/under it. A
+// healthy probe fills the window in ~31s (bench-validated), so this still
+// notifies far faster than the original 20 min while not false-triggering on
+// a real refill's confirm-as-real cycle.
+#define SAMPLING_STALL_TIMEOUT_MS (180UL * 1000UL)
 
 // Schedules
 #define MAX_SCHEDULES 100

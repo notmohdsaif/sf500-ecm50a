@@ -300,7 +300,12 @@ void uploadSensorReadings()
 
   if (ambSensorFound || metSensorFound)
   {
-    uint8_t ambientLikeId = ambSensorFound ? ambSensorId : metSensorId;
+    // ambDataFromAmbient reflects which sensor actually wrote the shared
+    // values on the most recent read (sensors.cpp) — not just which is
+    // present at boot (ambSensorFound) — so a row is never tagged under
+    // the wrong sensor_id when both Ambient and MET are present and
+    // Ambient's read happens to fail on this tick.
+    uint8_t ambientLikeId = ambDataFromAmbient ? ambSensorId : metSensorId;
     char atId[8], ahId[8], alId[8];
     sprintf(atId, "at_%02d", ambientLikeId);
     sprintf(ahId, "ah_%02d", ambientLikeId);

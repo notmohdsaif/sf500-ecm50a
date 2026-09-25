@@ -69,6 +69,7 @@ bool wlSensorFound   = false;
 bool ambSensorFound  = false;
 bool rainSensorFound = false;
 bool metSensorFound  = false;
+bool ambDataFromAmbient = true; // matches ambSensorFound-based fallback before any read completes
 SensorData sensors;
 
 bool relayStates[2] = {false, false};
